@@ -207,6 +207,182 @@ def transcript_stats(db: TranscriptDB) -> dict:
     return base_stats
 
 
+def discord_recall_index(
+    db: TranscriptDB,
+    channel: str | None = None,
+    limit: int = 50,
+    search: str | None = None,
+    after: str | None = None,
+    before: str | None = None,
+    direction: str | None = None,
+    author: str | None = None,
+) -> list[dict]:
+    """Progressive disclosure Layer 1: return compact index only.
+
+    Each result has: id, timestamp, entry_type, author, preview (first 80 chars),
+    chat_id, message_id. ~50-100 tokens per result instead of ~500-1000.
+    """
+    results = discord_recall(
+        db, channel=channel, limit=limit, search=search,
+        after=after, before=before, direction=direction, author=author,
+    )
+
+    index = []
+    for msg in results:
+        content = msg.get("content", "") or ""
+        index.append({
+            "id": msg.get("id"),
+            "timestamp": msg.get("timestamp", "")[:19],
+            "entry_type": msg.get("entry_type"),
+            "author": msg.get("author"),
+            "preview": content[:80] + ("..." if len(content) > 80 else ""),
+            "chat_id": msg.get("chat_id"),
+            "message_id": msg.get("message_id"),
+        })
+
+    return index
+
+
+def discord_detail(db: TranscriptDB, ids: list[int]) -> list[dict]:
+    """Progressive disclosure Layer 2: fetch full content for specific entries.
+
+    Call this after reviewing the index to get full content for entries you care about.
+    """
+    if not ids:
+        return []
+
+    placeholders = ",".join("?" * len(ids))
+    sql = f"""
+        SELECT id, session_id, entry_type, timestamp, content, source,
+               channel, chat_id, message_id, author, author_id, tool_name, metadata
+        FROM transcript
+        WHERE id IN ({placeholders})
+        ORDER BY timestamp ASC
+    """
+
+    with db.connection() as conn:
+        rows = conn.execute(sql, ids).fetchall()
+
+    return [_row_to_dict(row) for row in rows]
+
+
+def session_list(
+    db: TranscriptDB,
+    limit: int = 20,
+    after: str | None = None,
+    before: str | None = None,
+    persona: str | None = None,
+    disposition: str | None = None,
+) -> list[dict]:
+    """List sessions with summaries, dispositions, and date ranges.
+
+    Args:
+        db: TranscriptDB instance
+        limit: Max sessions to return (default 20, most recent first)
+        after: Sessions started after this ISO timestamp
+        before: Sessions started before this ISO timestamp
+        persona: Filter by persona name
+        disposition: Filter by COMPLETED/IN_PROGRESS/INTERRUPTED
+    """
+    conditions = []
+    params = []
+
+    if after:
+        conditions.append("started_at > ?")
+        params.append(after)
+    if before:
+        conditions.append("started_at < ?")
+        params.append(before)
+    if persona:
+        conditions.append("persona = ?")
+        params.append(persona)
+    if disposition:
+        conditions.append("disposition = ?")
+        params.append(disposition)
+
+    where = " AND ".join(conditions) if conditions else "1=1"
+    params.append(limit)
+
+    sql = f"""
+        SELECT session_id, persona, title, git_branch, cwd,
+               started_at, ended_at, exchange_count, disposition
+        FROM sessions
+        WHERE {where}
+        ORDER BY started_at DESC
+        LIMIT ?
+    """
+
+    with db.connection() as conn:
+        rows = conn.execute(sql, params).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+def consolidate_old_entries(db: TranscriptDB, retention_days: int):
+    """Compress old transcript entries into permanent session summaries, then prune raw entries.
+
+    Entries older than retention_days are:
+    1. Summarized (if their session doesn't have a summary yet)
+    2. Deleted from the transcript table
+
+    Session summaries persist forever as Layer 3.
+    """
+    if retention_days <= 0:
+        return 0  # 0 means keep everything
+
+    from .summarizer import summarize_session
+
+    cutoff = f"datetime('now', '-{retention_days} days')"
+
+    with db.connection() as conn:
+        # Find sessions with entries older than cutoff
+        old_sessions = conn.execute(f"""
+            SELECT DISTINCT session_id FROM transcript
+            WHERE timestamp < {cutoff}
+        """).fetchall()
+
+    if not old_sessions:
+        return 0
+
+    # Ensure summaries exist for these sessions
+    for row in old_sessions:
+        sid = row["session_id"]
+        with db.connection() as conn:
+            session = conn.execute(
+                "SELECT disposition FROM sessions WHERE session_id = ?", (sid,)
+            ).fetchone()
+
+        if not session or not session["disposition"]:
+            summary = summarize_session(db, sid)
+            with db.connection() as conn:
+                conn.execute(
+                    """UPDATE sessions SET
+                        disposition = ?,
+                        exchange_count = ?
+                    WHERE session_id = ?""",
+                    (summary["disposition"], summary["exchange_count"], sid),
+                )
+                conn.commit()
+
+    # Prune old raw entries (summaries in sessions table persist)
+    with db.connection() as conn:
+        result = conn.execute(f"""
+            DELETE FROM transcript
+            WHERE timestamp < {cutoff}
+        """)
+        pruned = result.rowcount
+        conn.commit()
+
+        if pruned:
+            # Rebuild FTS after bulk delete
+            conn.execute("INSERT INTO transcript_fts(transcript_fts) VALUES('rebuild')")
+            conn.commit()
+
+    if pruned:
+        log.info("Consolidated %d old entries from %d sessions", pruned, len(old_sessions))
+    return pruned
+
+
 def _row_to_dict(row) -> dict:
     """Convert a sqlite3.Row to a clean dict."""
     d = dict(row)
