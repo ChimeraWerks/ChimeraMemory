@@ -165,9 +165,10 @@ SQLite handles databases up to 281 TB. At projected 12-month scale (~700K entrie
 
 ## MCP Tools
 
-### `discord_recall`
+### Recall & Search
 
-Query conversation history from indexed transcripts.
+#### `discord_recall`
+Full conversation recall with filters. Returns complete message content.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
@@ -179,12 +180,42 @@ Query conversation history from indexed transcripts.
 | `direction` | string | — | `"inbound"` or `"outbound"` |
 | `author` | string | — | Filter by author username |
 
-### `transcript_stats`
+#### `discord_recall_index`
+**Token-efficient search.** Returns compact index (~100 tokens/result) with ID, timestamp, author, and 80-char preview. Use this first, then call `discord_detail` for entries you care about. Same parameters as `discord_recall`.
 
-Database health check: entry count, session count, DB size, last entry timestamp, breakdowns by type and source.
+#### `discord_detail`
+Fetch full content for specific entries by ID. Use after `discord_recall_index`.
 
-### `transcript_backfill`
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `ids` | list[int] | Entry IDs from the index results |
 
+**Recommended workflow:**
+1. `discord_recall_index(search="topic")` — scan previews (~100 tokens each)
+2. Pick the IDs that look relevant
+3. `discord_detail(ids=[...])` — get full content only for those
+
+This saves 3-10x tokens compared to fetching everything at once.
+
+### Sessions
+
+#### `session_list`
+Browse sessions with summaries, dispositions, and date ranges.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | int | 20 | Max sessions to return |
+| `after` | string | — | Sessions started after this timestamp |
+| `before` | string | — | Sessions started before this timestamp |
+| `persona` | string | — | Filter by persona name |
+| `disposition` | string | — | `"COMPLETED"`, `"IN_PROGRESS"`, or `"INTERRUPTED"` |
+
+### Database
+
+#### `transcript_stats`
+Database health check: entry count, session count, DB size, last entry timestamp, breakdowns by entry type, source, and session disposition.
+
+#### `transcript_backfill`
 Index all historical JSONL files. Safe to run multiple times — skips unchanged files automatically.
 
 ## CLI
@@ -198,11 +229,21 @@ chimera-memory stats              # Show database statistics
 
 ## Configuration
 
-| Environment Variable | Description | Default |
-|---------------------|-------------|---------|
-| `TRANSCRIPT_DB_PATH` | Path to SQLite database | `~/.chimera-memory/transcript.db` |
-| `TRANSCRIPT_JSONL_DIR` | Directory containing JSONL session files | Auto-detected from CWD |
-| `TRANSCRIPT_PERSONA` | Persona name to tag entries with | — |
+A config file is auto-generated on first run at `~/.chimera-memory/config.yaml`. Every option is commented out with plain-English explanations. Uncomment what you want to change.
+
+Priority order: **environment variables > config file > defaults**.
+
+| Setting | Config Key | Env Variable | Default |
+|---------|-----------|--------------|---------|
+| Database path | — | `TRANSCRIPT_DB_PATH` | `~/.chimera-memory/transcript.db` |
+| JSONL directory | `jsonl_dir` | `TRANSCRIPT_JSONL_DIR` | Auto-detected from CWD |
+| Persona name | `persona` | `TRANSCRIPT_PERSONA` | — |
+| Retention (days) | `retention_days` | `TRANSCRIPT_RETENTION_DAYS` | 90 |
+| Max DB size (MB) | `max_db_size_mb` | `TRANSCRIPT_MAX_DB_SIZE_MB` | 1024 |
+| Index tool calls | `index_tool_calls` | `TRANSCRIPT_INDEX_TOOL_CALLS` | true |
+| Index tool results | `index_tool_results` | `TRANSCRIPT_INDEX_TOOL_RESULTS` | false |
+| Progressive disclosure | `progressive_disclosure` | `TRANSCRIPT_PROGRESSIVE_DISCLOSURE` | true |
+| Branch detection | `branch_detection` | `TRANSCRIPT_BRANCH_DETECTION` | false |
 
 ## Database Schema
 
@@ -238,13 +279,15 @@ transcript_fts (content)
 - [x] MCP tools: `discord_recall`, `transcript_stats`, `transcript_backfill`
 - [x] CLI: `serve`, `backfill`, `stats`
 
-### Phase 2 — Search & Session Intelligence
-- [ ] Progressive disclosure (return summaries first, full content on demand)
-- [ ] Precomputed session summaries (deterministic, no LLM)
+### Phase 2 ✅ — Search & Session Intelligence
+- [x] Progressive disclosure (`discord_recall_index` + `discord_detail`, 3-10x token savings)
+- [x] Precomputed session summaries (deterministic, zero LLM, greeting/command filtering)
+- [x] Session browser (`session_list` MCP tool with date/persona/disposition filters)
+- [x] Retention consolidation (compress old entries to permanent summaries, prune raw transcripts)
+- [x] Auto-generated config file (`~/.chimera-memory/config.yaml` with commented defaults)
 - [ ] Conversation branch detection (handle Claude Code rewinds)
 - [ ] Export (markdown / JSON / CSV with filters)
 - [ ] Event hooks (emitter pattern for "new entry indexed" triggers)
-- [ ] CLI: `search`, `export`, `recent`
 
 ### Phase 3 — Semantic Layer
 - [ ] Local embeddings (all-MiniLM-L6-v2 ONNX, no API calls)
