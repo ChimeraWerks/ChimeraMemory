@@ -216,6 +216,77 @@ def create_server():
         )
 
     @server.tool()
+    def semantic_search(
+        query: str,
+        limit: int = 20,
+        channel: str | None = None,
+        after: str | None = None,
+        before: str | None = None,
+    ) -> str:
+        """Hybrid semantic + keyword search across all transcripts.
+
+        Combines FTS5 keyword matching with vector similarity (cosine) via
+        Reciprocal Rank Fusion. Finds both exact matches AND semantically
+        similar content (e.g. "car" finds "vehicle").
+
+        Results are re-ranked by recency, session affinity, and content richness.
+
+        Requires embeddings to be built (run transcript_backfill first).
+        Falls back to keyword-only search if embeddings aren't available.
+        """
+        from .search import hybrid_search
+
+        results = hybrid_search(
+            _get_db(), query, limit=limit, channel=channel,
+            after=after, before=before,
+        )
+
+        if not results:
+            return "No results found."
+
+        lines = []
+        for msg in results:
+            ts = msg.get("timestamp", "?")[:19]
+            author_name = msg.get("author", "unknown")
+            entry_type = msg.get("entry_type", "")
+            content = msg.get("content", "")
+            msg_id = msg.get("message_id", "")
+
+            if entry_type == "discord_inbound":
+                prefix = f"[{ts}] {author_name}"
+            elif entry_type == "discord_outbound":
+                prefix = f"[{ts}] -> (sent)"
+            else:
+                prefix = f"[{ts}] {entry_type}"
+
+            id_suffix = f" [msg:{msg_id}]" if msg_id else ""
+            lines.append(f"{prefix}{id_suffix}")
+            if content:
+                lines.append(content[:300] + ("..." if len(content) > 300 else ""))
+            lines.append("")
+
+        return "\n".join(lines)
+
+    @server.tool()
+    def embed_transcripts() -> str:
+        """Generate embeddings for all transcript entries that don't have them yet.
+
+        Run this after backfill to enable semantic search. Only embeds
+        conversation content (user messages, assistant messages, Discord messages).
+        Tool results and system entries are skipped.
+
+        Uses all-MiniLM-L6-v2 (23MB ONNX model, runs locally, no API calls).
+        """
+        from .embeddings import embed_transcript_entries, init_embedding_table
+
+        db = _get_db()
+        with db.connection() as conn:
+            init_embedding_table(conn)
+            count = embed_transcript_entries(db, conn)
+
+        return f"Embedded {count} entries. Semantic search is now available."
+
+    @server.tool()
     def discord_recall_index(
         channel: str | None = None,
         limit: int = 50,

@@ -1,11 +1,16 @@
 """Search and query functions for the transcript database."""
 
 import json
+import math
 import logging
+from datetime import datetime, timezone
 from .db import TranscriptDB
 from .sanitizer import build_fts_query
 
 log = logging.getLogger(__name__)
+
+# RRF constant (from Cormack et al. 2009)
+RRF_K = 60
 
 # Default entry types for Discord recall (skip tool noise)
 DISCORD_TYPES = ("discord_inbound", "discord_outbound", "user_message", "assistant_message")
@@ -381,6 +386,138 @@ def consolidate_old_entries(db: TranscriptDB, retention_days: int):
     if pruned:
         log.info("Consolidated %d old entries from %d sessions", pruned, len(old_sessions))
     return pruned
+
+
+def hybrid_search(
+    db: TranscriptDB,
+    query: str,
+    limit: int = 20,
+    channel: str | None = None,
+    after: str | None = None,
+    before: str | None = None,
+    entry_types: list[str] | None = None,
+) -> list[dict]:
+    """Hybrid search: merge FTS5 keyword results + vector similarity via RRF.
+
+    Catches both exact keyword matches AND semantic matches
+    (e.g. "car" finds "vehicle").
+
+    Falls back to FTS-only if embeddings aren't available.
+    """
+    if not query or not query.strip():
+        return []
+
+    if not entry_types:
+        entry_types = list(CONVERSATION_TYPES)
+
+    # Over-fetch from both channels (3x limit for RRF merge)
+    pool_size = limit * 3
+
+    # Channel 1: FTS5 keyword search
+    fts_results = _fts_search(
+        db, query, channel, pool_size, after, before, None, None, False,
+    )
+    fts_ranking = {r["id"]: rank for rank, r in enumerate(fts_results)}
+
+    # Channel 2: Vector similarity search
+    vec_ranking = {}
+    try:
+        from .embeddings import embed_text, vector_search, init_embedding_table
+
+        query_emb = embed_text(query)
+        with db.connection() as conn:
+            init_embedding_table(conn)
+            vec_results = vector_search(conn, query_emb, limit=pool_size, entry_types=entry_types)
+        vec_ranking = {tid: rank for rank, (tid, _score) in enumerate(vec_results)}
+    except Exception as e:
+        log.debug("Vector search unavailable, using FTS only: %s", e)
+
+    # RRF merge
+    all_ids = set(fts_ranking.keys()) | set(vec_ranking.keys())
+    if not all_ids:
+        return []
+
+    rrf_scores = {}
+    for doc_id in all_ids:
+        score = 0.0
+        if doc_id in fts_ranking:
+            score += 1.0 / (RRF_K + fts_ranking[doc_id] + 1)
+        if doc_id in vec_ranking:
+            score += 1.0 / (RRF_K + vec_ranking[doc_id] + 1)
+        rrf_scores[doc_id] = score
+
+    # Sort by RRF score descending
+    sorted_ids = sorted(rrf_scores.keys(), key=lambda x: -rrf_scores[x])[:limit]
+
+    # Fetch full entries
+    if not sorted_ids:
+        return []
+
+    placeholders = ",".join("?" * len(sorted_ids))
+    sql = f"""
+        SELECT id, session_id, entry_type, timestamp, content, source,
+               channel, chat_id, message_id, author, author_id, tool_name, metadata
+        FROM transcript
+        WHERE id IN ({placeholders})
+    """
+
+    with db.connection() as conn:
+        rows = conn.execute(sql, sorted_ids).fetchall()
+
+    # Re-sort by RRF score (DB returns in arbitrary order)
+    results = [_row_to_dict(row) for row in rows]
+    results.sort(key=lambda r: -rrf_scores.get(r.get("id", 0), 0))
+
+    # Apply re-ranking
+    results = _rerank(results)
+
+    return results
+
+
+def _rerank(results: list[dict]) -> list[dict]:
+    """Post-RRF re-ranking with contextual signals.
+
+    Multiplicative scoring:
+    - Recency: 2^(-days/14), floor 0.1 (14-day half-life)
+    - Session affinity: boost results from the most recent session
+    - Observation richness: 1 + log1p(content_length) / 10
+    """
+    if not results:
+        return results
+
+    now = datetime.now(timezone.utc)
+    most_recent_session = results[0].get("session_id") if results else None
+
+    scored = []
+    for r in results:
+        score = 1.0
+
+        # Recency signal
+        ts_str = r.get("timestamp", "")
+        if ts_str:
+            try:
+                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+                days_ago = (now - ts).total_seconds() / 86400
+                recency = max(0.1, 2 ** (-days_ago / 14))
+                score *= recency
+            except (ValueError, TypeError):
+                pass
+
+        # Session affinity (boost same-session results)
+        if r.get("session_id") == most_recent_session:
+            score *= 1.3
+
+        # Observation richness (longer content = richer)
+        content_len = len(r.get("content", "") or "")
+        if content_len > 0:
+            richness = 1 + math.log1p(content_len) / 10
+            score *= richness
+
+        scored.append((score, r))
+
+    # Re-sort by adjusted score
+    scored.sort(key=lambda x: -x[0])
+    return [r for _, r in scored]
 
 
 def _row_to_dict(row) -> dict:

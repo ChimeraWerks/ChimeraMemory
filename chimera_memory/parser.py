@@ -1,12 +1,95 @@
-"""Parse Claude Code JSONL session files into structured transcript entries."""
+"""Parse Claude Code JSONL session files into structured transcript entries.
+
+This module implements the Claude Code JSONL parser, the default parser
+for chimera-memory. Additional parsers (Codex, Hermes, etc.) can be
+registered via the parser registry.
+"""
 
 import json
 import re
 import logging
+from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Generator
 
 log = logging.getLogger(__name__)
+
+
+# ─── Parser Interface ────────────────────────────────────────────────
+
+
+class BaseParser(ABC):
+    """Abstract base class for session file parsers.
+
+    Implement this to add support for new session file formats
+    (Codex, Hermes, Cursor, etc.).
+    """
+
+    @property
+    @abstractmethod
+    def format_name(self) -> str:
+        """Unique identifier for this parser format (e.g. 'claude-code', 'codex')."""
+        ...
+
+    @property
+    @abstractmethod
+    def file_extensions(self) -> list[str]:
+        """File extensions this parser handles (e.g. ['.jsonl'])."""
+        ...
+
+    @abstractmethod
+    def parse_file(self, path: Path, start_offset: int = 0) -> Generator[dict, None, int]:
+        """Parse a session file from a byte offset. Yields structured entry dicts.
+
+        Each entry dict should have at minimum:
+            session_id, entry_type, timestamp, content
+
+        Optional fields:
+            persona, source, channel, chat_id, message_id,
+            author, author_id, tool_name, conversation_id,
+            source_refs, metadata
+
+        Returns the final byte position read (for tail-read tracking).
+        """
+        ...
+
+    @abstractmethod
+    def extract_session_metadata(self, path: Path) -> dict:
+        """Extract session-level metadata without full parsing.
+
+        Should return dict with: session_id, title, git_branch, cwd,
+        started_at, ended_at, exchange_count.
+        """
+        ...
+
+
+# ─── Parser Registry ─────────────────────────────────────────────────
+
+
+_registry: dict[str, type[BaseParser]] = {}
+
+
+def register_parser(parser_class: type[BaseParser]):
+    """Register a parser class for a format."""
+    instance = parser_class()
+    _registry[instance.format_name] = parser_class
+    for ext in instance.file_extensions:
+        _registry[ext] = parser_class
+    log.info("Registered parser: %s (extensions: %s)", instance.format_name, instance.file_extensions)
+
+
+def get_parser(format_or_ext: str) -> BaseParser:
+    """Get a parser instance by format name or file extension."""
+    cls = _registry.get(format_or_ext)
+    if cls is None:
+        # Default to Claude Code parser
+        return ClaudeCodeParser()
+    return cls()
+
+
+def get_parser_for_file(path: Path) -> BaseParser:
+    """Get the appropriate parser for a file based on its extension."""
+    return get_parser(path.suffix)
 
 # Discord inbound message pattern
 DISCORD_INBOUND_RE = re.compile(
@@ -34,6 +117,34 @@ CC_XML_TAGS = re.compile(
 
 # Entry types we skip entirely
 SKIP_TYPES = {"file-history-snapshot", "custom-title", "agent-name", "permission-mode"}
+
+
+# ─── Claude Code Parser (Default) ────────────────────────────────────
+
+
+class ClaudeCodeParser(BaseParser):
+    """Parser for Claude Code JSONL session files. The default parser."""
+
+    @property
+    def format_name(self) -> str:
+        return "claude-code"
+
+    @property
+    def file_extensions(self) -> list[str]:
+        return [".jsonl"]
+
+    def parse_file(self, path: Path, start_offset: int = 0) -> Generator[dict, None, int]:
+        return parse_jsonl_file(path, start_offset)
+
+    def extract_session_metadata(self, path: Path) -> dict:
+        return extract_session_metadata(path)
+
+
+# Register the default parser
+register_parser(ClaudeCodeParser)
+
+
+# ─── Parsing Implementation ──────────────────────────────────────────
 
 
 def parse_jsonl_file(path: Path, start_offset: int = 0) -> Generator[dict, None, int]:

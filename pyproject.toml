@@ -22,6 +22,7 @@ classifiers = [
 ]
 dependencies = [
     "watchdog>=4.0.0",
+    "fastembed>=0.8.0",
 ]
 
 [project.optional-dependencies]
