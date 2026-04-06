@@ -275,16 +275,40 @@ def create_server():
         conversation content (user messages, assistant messages, Discord messages).
         Tool results and system entries are skipped.
 
-        Uses all-MiniLM-L6-v2 (23MB ONNX model, runs locally, no API calls).
+        Uses bge-small-en-v1.5 (23MB ONNX model, runs locally, no API calls).
+        CPU usage is capped to 75% of available cores.
+
+        This may take several minutes on first run (e.g. 5,000 entries ~ 4 minutes).
         """
         from .embeddings import embed_transcript_entries, init_embedding_table
+        import os
 
         db = _get_db()
+        cores_used = max(1, int((os.cpu_count() or 4) * 0.75))
+
+        with db.connection() as conn:
+            init_embedding_table(conn)
+            # Check how many need embedding
+            pending = conn.execute("""
+                SELECT COUNT(*) FROM transcript t
+                LEFT JOIN transcript_embeddings e ON e.transcript_id = t.id
+                WHERE e.transcript_id IS NULL
+                  AND t.content IS NOT NULL AND t.content != ''
+                  AND t.entry_type IN ('user_message', 'assistant_message', 'discord_inbound', 'discord_outbound')
+            """).fetchone()[0]
+
+        if pending == 0:
+            return "All entries already have embeddings. Semantic search is ready."
+
         with db.connection() as conn:
             init_embedding_table(conn)
             count = embed_transcript_entries(db, conn)
 
-        return f"Embedded {count} entries. Semantic search is now available."
+        return (
+            f"Embedded {count} entries using {cores_used}/{os.cpu_count()} threads.\n"
+            f"Semantic search is now available.\n"
+            f"Use semantic_search(query) to find content by meaning, not just keywords."
+        )
 
     @server.tool()
     def discord_recall_index(

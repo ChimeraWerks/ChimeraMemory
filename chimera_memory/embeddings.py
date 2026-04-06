@@ -17,12 +17,28 @@ _model = None
 
 
 def _get_model():
-    """Lazy-load the embedding model (23MB ONNX, cached after first download)."""
+    """Lazy-load the embedding model (23MB ONNX, cached after first download).
+
+    Caps ONNX threads to 75% of available cores to avoid pegging the CPU.
+    """
     global _model
     if _model is None:
+        import os
+        # Cap ONNX Runtime threads to 75% of cores
+        cpu_count = os.cpu_count() or 4
+        max_threads = max(1, int(cpu_count * 0.75))
+        os.environ.setdefault("OMP_NUM_THREADS", str(max_threads))
+
+        # onnxruntime reads these env vars before session creation
+        os.environ.setdefault("ORT_INTRA_OP_NUM_THREADS", str(max_threads))
+        os.environ.setdefault("ORT_INTER_OP_NUM_THREADS", str(max(1, max_threads // 2)))
+
         from fastembed import TextEmbedding
-        _model = TextEmbedding(MODEL_NAME)
-        log.info("Loaded embedding model: %s (%d dims)", MODEL_NAME, EMBEDDING_DIM)
+        _model = TextEmbedding(MODEL_NAME, threads=max_threads)
+        log.info(
+            "Loaded embedding model: %s (%d dims, %d/%d threads)",
+            MODEL_NAME, EMBEDDING_DIM, max_threads, cpu_count,
+        )
     return _model
 
 
@@ -122,10 +138,17 @@ def vector_search(conn: sqlite3.Connection, query_embedding: list[float],
     return results[:limit]
 
 
-def embed_transcript_entries(db, conn: sqlite3.Connection, batch_size: int = 100):
+def embed_transcript_entries(db, conn: sqlite3.Connection, batch_size: int = 100,
+                              progress_callback=None):
     """Embed all transcript entries that don't have embeddings yet.
 
     Only embeds entries with content (skips tool_result, system, etc.).
+
+    Args:
+        db: TranscriptDB instance
+        conn: SQLite connection
+        batch_size: Number of entries to embed per batch
+        progress_callback: Called with (entries_done, total_entries) after each batch
     """
     init_embedding_table(conn)
 
@@ -143,7 +166,7 @@ def embed_transcript_entries(db, conn: sqlite3.Connection, batch_size: int = 100
     if not rows:
         return 0
 
-    log.info("Embedding %d transcript entries...", len(rows))
+    log.info("Embedding %d transcript entries (this may take a few minutes)...", len(rows))
 
     # Process in batches
     total = 0
@@ -157,7 +180,9 @@ def embed_transcript_entries(db, conn: sqlite3.Connection, batch_size: int = 100
         store_embeddings(conn, entries)
         total += len(entries)
 
-        if total % 500 == 0:
+        if progress_callback:
+            progress_callback(total, len(rows))
+        elif total % 500 == 0:
             log.info("  Embedded %d / %d entries", total, len(rows))
 
     log.info("Embedding complete: %d entries", total)
