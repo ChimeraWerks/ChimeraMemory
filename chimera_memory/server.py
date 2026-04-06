@@ -612,6 +612,76 @@ def create_server():
             return f"Marked failure on {file_path}. It will rank lower in future searches."
         return f"File not found: {file_path}"
 
+    # ─── Cognitive Layer Tools ───────────────────────────────────────
+
+    @server.tool()
+    def memory_decay_report(persona: str | None = None) -> str:
+        """Show how memory importance has decayed based on access patterns.
+
+        Uses per-type exponential decay rates:
+        - Facts/entities: very slow (0.005/day)
+        - Procedural: slowest (0.003/day, load-bearing knowledge)
+        - Episodes: moderate (0.010/day)
+        - Opinions: fastest (0.020/day)
+        """
+        _ensure_memory_indexed()
+        from .cognitive import apply_salience_decay
+        result = apply_salience_decay(_get_memory_conn(), persona)
+        return (
+            f"Analyzed {result['total_analyzed']} memories.\n"
+            f"Decayed from original importance: {result['decayed_count']}\n\n"
+            f"Decay rates by type:\n" +
+            "\n".join(f"  {t}: {r}/day" for t, r in result["decay_rates"].items())
+        )
+
+    @server.tool()
+    def memory_surprise(persona: str | None = None, limit: int = 20) -> str:
+        """Show novelty scores for memories. High surprise = unique knowledge. Low = redundant.
+
+        Computed via nearest-neighbor similarity in embedding space. Zero LLM calls.
+        """
+        _ensure_memory_indexed()
+        from .cognitive import score_all_surprise
+        results = score_all_surprise(_get_memory_conn(), persona)
+        if not results:
+            return "No embedded memories found. Run memory_reindex first."
+        lines = ["Surprise | Importance | Type | Path"]
+        lines.append("---------|-----------|------|-----")
+        for r in results[:limit]:
+            lines.append(f"{r['surprise']:.3f}    | {r.get('importance', '?'):>9} | {r.get('type', '?'):<4} | {r['path']}")
+        return "\n".join(lines)
+
+    @server.tool()
+    def memory_zones(persona: str | None = None) -> str:
+        """Show zone assignments for all memories.
+
+        Zones determine loading behavior:
+        - CORE (>=0.80): always loaded every session
+        - ACTIVE (>=0.60): loaded when tags match current task
+        - PASSIVE (>=0.30): loaded only on direct query
+        - ARCHIVE (<0.30): never auto-loaded
+
+        Score = confidence + frequency + recency - failure_penalty
+        """
+        _ensure_memory_indexed()
+        from .cognitive import compute_all_zones
+        results, counts = compute_all_zones(_get_memory_conn(), persona)
+        if not results:
+            return "No memories with importance scores found."
+        lines = [
+            f"**Zone distribution:** core={counts['core']}, active={counts['active']}, passive={counts['passive']}, archive={counts['archive']}",
+            "",
+            "Score | Zone    | Importance | Access | Days | Failures | Path",
+            "------|---------|-----------|--------|------|----------|-----",
+        ]
+        for r in results[:30]:
+            lines.append(
+                f"{r['score']:.3f} | {r['zone']:<7} | {r.get('importance', '?'):>9} | "
+                f"{r.get('access_count', 0):>6} | {r.get('days_since_access', 0):>4.0f} | "
+                f"{r.get('failure_count', 0):>8} | {r['path']}"
+            )
+        return "\n".join(lines)
+
     return server
 
 
