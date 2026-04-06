@@ -32,7 +32,25 @@ SECRET_PATTERNS = [
     (re.compile(r'-----BEGIN (?:RSA |EC |DSA )?PRIVATE KEY-----'), '<REDACTED:private-key>'),
 ]
 
-# FTS5 operator sanitization (from Claudest)
+# ─── Prompt Injection & Exfiltration Detection ──────────────────────
+
+INJECTION_PATTERNS = [
+    re.compile(r'(?i)ignore\s+(all\s+)?(previous|above|prior)\s+(instructions|prompts)'),
+    re.compile(r'(?i)disregard\s+(your|all|previous)'),
+    re.compile(r'(?i)you\s+are\s+now\s+(a|an|the)\s+'),
+    re.compile(r'(?i)new\s+instructions?\s*:'),
+    re.compile(r'(?i)system\s+prompt\s*:'),
+    re.compile(r'(?i)forget\s+(everything|your\s+instructions)'),
+    re.compile(r'(?i)send\s+(this|the|all|my)\s+.{0,30}(to|via)\s+(http|email|webhook|slack|telegram)'),
+    re.compile(r'(?i)curl\s+.*\s+http'),
+    re.compile(r'(?i)fetch\s*\(\s*["\']https?://'),
+    re.compile(r'(?i)base64\.(encode|decode)'),
+]
+
+# Invisible unicode characters (zero-width spaces, joiners, etc.)
+INVISIBLE_CHARS = {0x200b, 0x200c, 0x200d, 0x2060, 0xfeff}
+
+# FTS5 operator sanitization
 FTS_OPERATORS = re.compile(r'["\(\)*\-^]')
 FTS_KEYWORDS = re.compile(r'\b(NEAR|AND|OR|NOT)\b', re.IGNORECASE)
 
@@ -76,3 +94,55 @@ def build_fts_query(terms: list[str]) -> str:
         if cleaned:
             clean_terms.append(f'"{cleaned}"')
     return " OR ".join(clean_terms) if clean_terms else ""
+
+
+def scan_for_injection(content: str) -> list[dict]:
+    """Scan content for prompt injection, exfiltration, and hidden content.
+
+    Returns list of findings. Empty list = clean.
+    Use this before writing to memory files (memory_guard).
+    """
+    if not content:
+        return []
+
+    findings = []
+
+    for pattern in INJECTION_PATTERNS:
+        matches = pattern.findall(content)
+        if matches:
+            findings.append({
+                "type": "injection",
+                "pattern": pattern.pattern[:60],
+                "match_count": len(matches),
+                "sample": str(matches[0])[:100],
+            })
+
+    # Check for invisible unicode
+    invisible_count = sum(1 for c in content if ord(c) in INVISIBLE_CHARS)
+    if invisible_count > 5:
+        findings.append({
+            "type": "invisible_unicode",
+            "match_count": invisible_count,
+            "sample": f"{invisible_count} invisible unicode characters detected",
+        })
+
+    # Check for HTML comments (could hide instructions)
+    html_comments = re.findall(r'<!--.*?-->', content, re.DOTALL)
+    if html_comments:
+        findings.append({
+            "type": "html_comment",
+            "match_count": len(html_comments),
+            "sample": html_comments[0][:100],
+        })
+
+    # Check for credential patterns
+    for pattern, replacement in SECRET_PATTERNS:
+        if pattern.search(content):
+            findings.append({
+                "type": "credential",
+                "pattern": replacement,
+                "match_count": 1,
+                "sample": replacement,
+            })
+
+    return findings

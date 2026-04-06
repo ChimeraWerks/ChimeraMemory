@@ -450,6 +450,168 @@ def create_server():
 
         return "\n".join(lines)
 
+    # ─── Curated Memory Tools ────────────────────────────────────────
+
+    def _get_memory_conn():
+        """Get a connection with memory tables initialized."""
+        if "memory_conn" not in _state:
+            from .memory import init_memory_tables
+            db = _get_db()
+            conn = db._connect()
+            init_memory_tables(conn)
+            _state["memory_conn"] = conn
+        return _state["memory_conn"]
+
+    def _ensure_memory_indexed():
+        """Ensure memory files are indexed on first use."""
+        if "memory_indexed" not in _state:
+            from .memory import full_reindex
+            personas_dir = Path(os.environ.get("CHIMERA_PERSONAS_DIR", "C:/Github/ChimeraPersonas/personas"))
+            conn = _get_memory_conn()
+            full_reindex(conn, personas_dir, embed=True)
+            _state["memory_indexed"] = True
+
+    @server.tool()
+    def memory_search(query: str, persona: str | None = None, limit: int = 20) -> str:
+        """Full-text search across all persona memory files. Returns paths, snippets, and metadata."""
+        _ensure_memory_indexed()
+        from .memory import memory_search as _search
+        results = _search(_get_memory_conn(), query, persona, limit)
+        if not results:
+            return "No memories found matching your query."
+        lines = []
+        for r in results:
+            imp = f" [importance:{r['importance']}]" if r.get("importance") else ""
+            lines.append(f"**{r['relative_path']}** ({r['persona']}){imp}")
+            lines.append(f"  {r.get('snippet', '')}")
+            lines.append("")
+        return "\n".join(lines)
+
+    @server.tool()
+    def memory_query(
+        persona: str | None = None, type: str | None = None,
+        min_importance: int | None = None, max_importance: int | None = None,
+        status: str | None = None, tag: str | None = None,
+        about: str | None = None, sort_by: str = "importance",
+        sort_order: str = "DESC", limit: int = 50,
+    ) -> str:
+        """Query memories by frontmatter fields (type, importance, status, tags, etc)."""
+        _ensure_memory_indexed()
+        from .memory import memory_query as _query
+        results = _query(_get_memory_conn(), persona=persona, fm_type=type,
+                         min_importance=min_importance, max_importance=max_importance,
+                         status=status, tag=tag, about=about, sort_by=sort_by,
+                         sort_order=sort_order, limit=limit)
+        if not results:
+            return "No memories match your criteria."
+        lines = []
+        for r in results:
+            imp = r.get("importance", "?")
+            lines.append(f"[{imp}] {r['relative_path']} ({r['persona']}) — {r.get('type', '?')} — {r.get('about', '')}")
+        return "\n".join(lines)
+
+    @server.tool()
+    def memory_recall(concept: str, persona: str | None = None, limit: int = 10) -> str:
+        """Semantic recall: find memories most similar to a concept or question. Uses embeddings."""
+        _ensure_memory_indexed()
+        from .memory import memory_recall as _recall
+        results = _recall(_get_memory_conn(), concept, persona, limit)
+        if not results:
+            return "No similar memories found."
+        lines = []
+        for r in results:
+            lines.append(f"[{r.get('similarity', 0):.3f}] {r['relative_path']} ({r['persona']}) — {r.get('about', '')}")
+        return "\n".join(lines)
+
+    @server.tool()
+    def memory_stats(persona: str | None = None) -> str:
+        """Get memory corpus statistics: file counts by type, status, persona."""
+        _ensure_memory_indexed()
+        from .memory import memory_stats as _stats
+        stats = _stats(_get_memory_conn(), persona)
+        lines = [f"**Total files:** {stats['total_files']}"]
+        if stats.get("by_type"):
+            lines.append("**By type:**")
+            for t, c in stats["by_type"].items():
+                lines.append(f"  {t}: {c}")
+        if stats.get("by_status"):
+            lines.append("**By status:**")
+            for s, c in stats["by_status"].items():
+                lines.append(f"  {s}: {c}")
+        if stats.get("by_persona"):
+            lines.append("**By persona:**")
+            for p, c in stats["by_persona"].items():
+                lines.append(f"  {p}: {c}")
+        return "\n".join(lines)
+
+    @server.tool()
+    def memory_gaps(persona: str | None = None) -> str:
+        """Detect knowledge gaps using graph analysis. Finds disconnected clusters and isolated files."""
+        _ensure_memory_indexed()
+        from .memory import memory_gaps as _gaps
+        result = _gaps(_get_memory_conn(), persona)
+        if "error" in result:
+            return result["error"]
+        lines = [
+            f"**Nodes:** {result['total_nodes']} | **Edges:** {result['total_edges']} | **Components:** {result['connected_components']}",
+        ]
+        if result.get("clusters"):
+            lines.append("\n**Clusters:**")
+            for c in result["clusters"]:
+                lines.append(f"  Size {c['size']}: {', '.join(c['top_concepts'][:5])}")
+        if result.get("isolated_files"):
+            lines.append(f"\n**Isolated files:** {len(result['isolated_files'])}")
+            for f in result["isolated_files"][:5]:
+                lines.append(f"  {f['path']}")
+        return "\n".join(lines)
+
+    @server.tool()
+    def memory_guard(content: str) -> str:
+        """Scan text for prompt injection, exfiltration, invisible unicode, and credential leaks."""
+        from .sanitizer import scan_for_injection
+        findings = scan_for_injection(content)
+        if not findings:
+            return "Clean. No issues detected."
+        lines = [f"**{len(findings)} issue(s) found:**"]
+        for f in findings:
+            lines.append(f"  [{f['type']}] {f.get('sample', f.get('pattern', ''))}")
+        return "\n".join(lines)
+
+    @server.tool()
+    def memory_consolidation_report(persona: str | None = None) -> str:
+        """Dry-run analysis of memory consolidation. Shows what would be decayed, marked stale, or archived."""
+        _ensure_memory_indexed()
+        from .memory import consolidation_report
+        result = consolidation_report(_get_memory_conn(), persona)
+        s = result["summary"]
+        lines = [
+            f"**Analyzed:** {result['total_analyzed']} files",
+            f"**Would mark stale:** {s['would_mark_stale']}",
+            f"**Would archive:** {s['would_archive']}",
+        ]
+        if result.get("stale_candidates"):
+            lines.append("\n**Stale candidates:**")
+            for c in result["stale_candidates"][:5]:
+                lines.append(f"  {c['path']} (importance: {c['importance']} -> {c['decayed']})")
+        return "\n".join(lines)
+
+    @server.tool()
+    def memory_reindex() -> str:
+        """Force a full reindex of all persona memory files."""
+        from .memory import full_reindex
+        personas_dir = Path(os.environ.get("CHIMERA_PERSONAS_DIR", "C:/Github/ChimeraPersonas/personas"))
+        conn = _get_memory_conn()
+        updated = full_reindex(conn, personas_dir, embed=True)
+        return f"Reindexed. {updated} files new or updated."
+
+    @server.tool()
+    def memory_mark_failure(file_path: str) -> str:
+        """Increment failure_count for a memory that led to wrong advice or a bad decision."""
+        from .memory import mark_failure
+        if mark_failure(_get_memory_conn(), file_path):
+            return f"Marked failure on {file_path}. It will rank lower in future searches."
+        return f"File not found: {file_path}"
+
     return server
 
 

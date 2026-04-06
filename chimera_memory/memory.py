@@ -1,0 +1,599 @@
+"""Curated memory system: index, search, and manage persona memory files.
+
+Ported from the original chimera-memory MCP server. Indexes markdown files
+with YAML frontmatter, provides FTS5 + semantic search, gap detection,
+and consolidation analysis.
+"""
+
+import hashlib
+import json
+import logging
+import os
+import re
+import sqlite3
+import time
+from datetime import datetime
+from pathlib import Path
+from typing import Optional
+
+log = logging.getLogger(__name__)
+
+# ─── Config ──────────────────────────────────────────────────────────
+
+MEMORY_DIRS = {"memory", "reading", "shared"}
+INDEX_EXTENSIONS = {".md"}
+SKIP_DIRS = {".git", ".obsidian", ".claude", "__pycache__", "node_modules", ".chimera"}
+
+# Consolidation thresholds
+IMPORTANCE_DECAY_RATE = 0.05
+MIN_IMPORTANCE_ACTIVE = 3
+MIN_IMPORTANCE_STALE = 1
+CONSOLIDATION_AGE_DAYS = 7
+
+# ─── Schema ──────────────────────────────────────────────────────────
+
+MEMORY_SCHEMA = """
+CREATE TABLE IF NOT EXISTS memory_files (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    path TEXT UNIQUE NOT NULL,
+    persona TEXT NOT NULL,
+    relative_path TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    indexed_at REAL NOT NULL,
+    fm_type TEXT,
+    fm_importance INTEGER,
+    fm_created TEXT,
+    fm_last_accessed TEXT,
+    fm_access_count INTEGER DEFAULT 0,
+    fm_status TEXT DEFAULT 'active',
+    fm_about TEXT,
+    fm_tags TEXT,
+    fm_entity TEXT,
+    fm_relationship_temperature REAL,
+    fm_trust_level REAL,
+    fm_trend TEXT,
+    fm_failure_count INTEGER DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_mf_persona ON memory_files(persona);
+CREATE INDEX IF NOT EXISTS idx_mf_type ON memory_files(fm_type);
+CREATE INDEX IF NOT EXISTS idx_mf_importance ON memory_files(fm_importance);
+CREATE INDEX IF NOT EXISTS idx_mf_status ON memory_files(fm_status);
+
+CREATE TABLE IF NOT EXISTS memory_embeddings (
+    file_id INTEGER PRIMARY KEY REFERENCES memory_files(id) ON DELETE CASCADE,
+    embedding BLOB NOT NULL,
+    embedded_at REAL NOT NULL
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+    path,
+    persona,
+    relative_path,
+    content,
+    fm_type,
+    fm_tags,
+    fm_about,
+    tokenize='porter unicode61'
+);
+"""
+
+
+def init_memory_tables(conn: sqlite3.Connection):
+    """Create memory tables if they don't exist."""
+    conn.executescript(MEMORY_SCHEMA)
+    conn.commit()
+
+
+# ─── FTS Normalization ───────────────────────────────────────────────
+
+def normalize_for_fts(text: str) -> str:
+    """Expand text for better FTS5 matching.
+    Splits CamelCase and file paths into separate tokens.
+    """
+    def expand_camel(match):
+        word = match.group(0)
+        parts = re.sub(r'(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])', ' ', word)
+        return f"{word} {parts}" if parts != word else word
+
+    def expand_path(match):
+        path = match.group(0)
+        segments = re.split(r'[/\\]', path)
+        segments = [s for s in segments if s and s not in ('', 'C:')]
+        return f"{path} {' '.join(segments)}"
+
+    result = re.sub(r'[A-Za-z]:[/\\][^\s,;)}\]]+', expand_path, text)
+    result = re.sub(r'\b[A-Z][a-z]+(?:[A-Z][a-z]+)+\b', expand_camel, result)
+    return result
+
+
+# ─── Frontmatter ─────────────────────────────────────────────────────
+
+def parse_frontmatter(text: str) -> tuple[dict, str]:
+    """Parse YAML frontmatter from markdown."""
+    if not text.startswith("---"):
+        return {}, text
+    end = text.find("\n---", 3)
+    if end == -1:
+        return {}, text
+    try:
+        import yaml
+        fm = yaml.safe_load(text[3:end].strip()) or {}
+    except Exception:
+        fm = {}
+    return fm, text[end + 4:].strip()
+
+
+# ─── File Discovery ─────────────────────────────────────────────────
+
+def discover_files(personas_dir: Path) -> list[tuple[str, str, Path]]:
+    """Discover all indexable markdown files. Returns [(persona, relative_path, full_path)]."""
+    results = []
+    if not personas_dir.exists():
+        return results
+
+    for persona_dir in personas_dir.iterdir():
+        if not persona_dir.is_dir() or persona_dir.name.startswith("."):
+            continue
+        for sub in persona_dir.iterdir():
+            if not sub.is_dir() or sub.name.startswith("."):
+                continue
+            _walk_for_files(sub, sub.name, sub, results)
+
+    shared_dir = personas_dir.parent / "shared"
+    if shared_dir.exists():
+        _walk_for_files(shared_dir, "shared", shared_dir, results)
+
+    return results
+
+
+def _walk_for_files(directory: Path, persona: str, base: Path, results: list):
+    for item in directory.iterdir():
+        if item.name in SKIP_DIRS:
+            continue
+        if item.is_dir():
+            _walk_for_files(item, persona, base, results)
+        elif item.is_file() and item.suffix in INDEX_EXTENSIONS:
+            rel = str(item.relative_to(base)).replace("\\", "/")
+            results.append((persona, rel, item))
+
+
+# ─── Indexing ────────────────────────────────────────────────────────
+
+def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
+               full_path: Path, maintenance: bool = False) -> bool:
+    """Index a single memory file. Returns True if new or updated.
+
+    Args:
+        maintenance: If True, don't bump access counters (anti-inflation).
+    """
+    try:
+        content = full_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+
+    content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+    path_str = str(full_path).replace("\\", "/")
+
+    row = conn.execute(
+        "SELECT id, content_hash FROM memory_files WHERE path = ?", (path_str,)
+    ).fetchone()
+
+    if row and row[1] == content_hash:
+        return False
+
+    fm, body = parse_frontmatter(content)
+    tags_json = json.dumps(fm.get("tags", []))
+    now = time.time()
+
+    if row:
+        file_id = row[0]
+        conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (file_id,))
+        conn.execute("""
+            UPDATE memory_files SET
+                content_hash=?, indexed_at=?,
+                fm_type=?, fm_importance=?, fm_created=?, fm_last_accessed=?,
+                fm_access_count=?, fm_status=?, fm_about=?, fm_tags=?,
+                fm_entity=?, fm_relationship_temperature=?, fm_trust_level=?,
+                fm_trend=?, fm_failure_count=?
+            WHERE id=?
+        """, (
+            content_hash, now,
+            fm.get("type"), fm.get("importance"), fm.get("created"),
+            fm.get("last_accessed"), fm.get("access_count", 0),
+            fm.get("status", "active"), fm.get("about"), tags_json,
+            fm.get("entity"), fm.get("relationship_temperature"),
+            fm.get("trust_level"), fm.get("trend"),
+            fm.get("failure_count", 0),
+            file_id
+        ))
+    else:
+        cursor = conn.execute("""
+            INSERT INTO memory_files (
+                path, persona, relative_path, content_hash, indexed_at,
+                fm_type, fm_importance, fm_created, fm_last_accessed,
+                fm_access_count, fm_status, fm_about, fm_tags,
+                fm_entity, fm_relationship_temperature, fm_trust_level,
+                fm_trend, fm_failure_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            path_str, persona, relative_path, content_hash, now,
+            fm.get("type"), fm.get("importance"), fm.get("created"),
+            fm.get("last_accessed"), fm.get("access_count", 0),
+            fm.get("status", "active"), fm.get("about"), tags_json,
+            fm.get("entity"), fm.get("relationship_temperature"),
+            fm.get("trust_level"), fm.get("trend"),
+            fm.get("failure_count", 0),
+        ))
+        file_id = cursor.lastrowid
+
+    fts_body = normalize_for_fts(body)
+    conn.execute("""
+        INSERT INTO memory_fts (rowid, path, persona, relative_path, content, fm_type, fm_tags, fm_about)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (file_id, path_str, persona, relative_path, fts_body, fm.get("type", ""), tags_json, fm.get("about", "")))
+
+    return True
+
+
+def full_reindex(conn: sqlite3.Connection, personas_dir: Path, embed: bool = True) -> int:
+    """Full reindex of all persona memory files."""
+    files = discover_files(personas_dir)
+    updated = 0
+    updated_ids = []
+
+    for persona, rel, full_path in files:
+        if index_file(conn, persona, rel, full_path, maintenance=True):
+            updated += 1
+            row = conn.execute("SELECT id FROM memory_files WHERE path = ?",
+                               (str(full_path).replace("\\", "/"),)).fetchone()
+            if row:
+                updated_ids.append(row[0])
+    conn.commit()
+
+    # Clean up deleted files
+    indexed_paths = {str(fp).replace("\\", "/") for _, _, fp in files}
+    rows = conn.execute("SELECT id, path FROM memory_files").fetchall()
+    for file_id, path in rows:
+        if path not in indexed_paths:
+            conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (file_id,))
+            conn.execute("DELETE FROM memory_embeddings WHERE file_id = ?", (file_id,))
+            conn.execute("DELETE FROM memory_files WHERE id = ?", (file_id,))
+    conn.commit()
+
+    if embed and updated_ids:
+        embed_memory_files(conn, updated_ids)
+    if embed:
+        missing = conn.execute("""
+            SELECT f.id FROM memory_files f
+            LEFT JOIN memory_embeddings e ON e.file_id = f.id
+            WHERE e.file_id IS NULL
+        """).fetchall()
+        missing_ids = [r[0] for r in missing if r[0] not in updated_ids]
+        if missing_ids:
+            embed_memory_files(conn, missing_ids)
+
+    return updated
+
+
+def embed_memory_files(conn: sqlite3.Connection, file_ids: list[int]):
+    """Generate and store embeddings for memory files using fastembed."""
+    if not file_ids:
+        return
+
+    from .embeddings import embed_batch, pack_embedding
+
+    placeholders = ",".join("?" * len(file_ids))
+    rows = conn.execute(f"""
+        SELECT id, path, persona, relative_path, fm_type, fm_about, fm_tags
+        FROM memory_files WHERE id IN ({placeholders})
+    """, file_ids).fetchall()
+
+    texts = []
+    ids = []
+    for r in rows:
+        path = Path(r[1])
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+            _, body = parse_frontmatter(content)
+        except OSError:
+            body = ""
+
+        text_parts = [f"persona:{r[2]}", f"file:{r[3]}"]
+        if r[4]:
+            text_parts.append(f"type:{r[4]}")
+        if r[5]:
+            text_parts.append(f"about:{r[5]}")
+        if r[6]:
+            tags = json.loads(r[6]) if r[6] else []
+            if tags:
+                text_parts.append(f"tags:{','.join(str(t) for t in tags)}")
+        text_parts.append(body[:2000])
+        texts.append(" ".join(text_parts))
+        ids.append(r[0])
+
+    if not texts:
+        return
+
+    log.info("Embedding %d memory files...", len(texts))
+    now = time.time()
+
+    for file_id, emb in zip(ids, embed_batch(texts)):
+        conn.execute("""
+            INSERT OR REPLACE INTO memory_embeddings (file_id, embedding, embedded_at)
+            VALUES (?, ?, ?)
+        """, (file_id, pack_embedding(emb), now))
+    conn.commit()
+
+
+# ─── Search Tools ────────────────────────────────────────────────────
+
+def memory_search(conn: sqlite3.Connection, query: str, persona: Optional[str] = None, limit: int = 20) -> list[dict]:
+    """Full-text search across memory files."""
+    if persona:
+        rows = conn.execute("""
+            SELECT f.path, f.persona, f.relative_path, f.fm_type, f.fm_importance,
+                   f.fm_status, snippet(memory_fts, 3, '>>>', '<<<', '...', 40) as snippet
+            FROM memory_fts
+            JOIN memory_files f ON f.id = memory_fts.rowid
+            WHERE memory_fts MATCH ? AND f.persona = ?
+            ORDER BY rank LIMIT ?
+        """, (query, persona, limit)).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT f.path, f.persona, f.relative_path, f.fm_type, f.fm_importance,
+                   f.fm_status, snippet(memory_fts, 3, '>>>', '<<<', '...', 40) as snippet
+            FROM memory_fts
+            JOIN memory_files f ON f.id = memory_fts.rowid
+            WHERE memory_fts MATCH ?
+            ORDER BY rank LIMIT ?
+        """, (query, limit)).fetchall()
+
+    return [
+        {"path": r[0], "persona": r[1], "relative_path": r[2], "type": r[3],
+         "importance": r[4], "status": r[5], "snippet": r[6]}
+        for r in rows
+    ]
+
+
+def memory_query(
+    conn: sqlite3.Connection, persona: Optional[str] = None,
+    fm_type: Optional[str] = None, min_importance: Optional[int] = None,
+    max_importance: Optional[int] = None, status: Optional[str] = None,
+    tag: Optional[str] = None, about: Optional[str] = None,
+    sort_by: str = "importance", sort_order: str = "DESC", limit: int = 50,
+) -> list[dict]:
+    """Structured query against frontmatter fields."""
+    conditions, params = [], []
+
+    if persona:
+        conditions.append("persona = ?"); params.append(persona)
+    if fm_type:
+        conditions.append("fm_type = ?"); params.append(fm_type)
+    if min_importance is not None:
+        conditions.append("fm_importance >= ?"); params.append(min_importance)
+    if max_importance is not None:
+        conditions.append("fm_importance <= ?"); params.append(max_importance)
+    if status:
+        conditions.append("fm_status = ?"); params.append(status)
+    if tag:
+        conditions.append("fm_tags LIKE ?"); params.append(f"%{tag}%")
+    if about:
+        conditions.append("fm_about LIKE ?"); params.append(f"%{about}%")
+
+    where = " AND ".join(conditions) if conditions else "1=1"
+    valid_sorts = {
+        "importance": "fm_importance", "created": "fm_created",
+        "last_accessed": "fm_last_accessed", "access_count": "fm_access_count",
+        "trust_level": "fm_trust_level", "relationship_temperature": "fm_relationship_temperature",
+    }
+    sort_col = valid_sorts.get(sort_by, "fm_importance")
+    order = "ASC" if sort_order.upper() == "ASC" else "DESC"
+
+    rows = conn.execute(f"""
+        SELECT path, persona, relative_path, fm_type, fm_importance,
+               fm_created, fm_last_accessed, fm_access_count, fm_status,
+               fm_about, fm_tags, fm_entity, fm_relationship_temperature,
+               fm_trust_level, fm_trend, fm_failure_count
+        FROM memory_files WHERE {where}
+        ORDER BY {sort_col} {order} NULLS LAST LIMIT ?
+    """, params + [limit]).fetchall()
+
+    return [
+        {"path": r[0], "persona": r[1], "relative_path": r[2], "type": r[3],
+         "importance": r[4], "created": r[5], "last_accessed": r[6],
+         "access_count": r[7], "status": r[8], "about": r[9],
+         "tags": json.loads(r[10]) if r[10] else [], "entity": r[11],
+         "relationship_temperature": r[12], "trust_level": r[13],
+         "trend": r[14], "failure_count": r[15]}
+        for r in rows
+    ]
+
+
+def memory_recall(conn: sqlite3.Connection, concept: str, persona: Optional[str] = None, limit: int = 10) -> list[dict]:
+    """Semantic recall: find memories most similar to a concept."""
+    from .embeddings import embed_text, unpack_embedding, cosine_similarity
+
+    query_emb = embed_text(concept)
+
+    if persona:
+        rows = conn.execute("""
+            SELECT f.id, f.path, f.persona, f.relative_path, f.fm_type,
+                   f.fm_importance, f.fm_status, f.fm_about, e.embedding
+            FROM memory_files f
+            JOIN memory_embeddings e ON e.file_id = f.id
+            WHERE f.persona = ?
+        """, (persona,)).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT f.id, f.path, f.persona, f.relative_path, f.fm_type,
+                   f.fm_importance, f.fm_status, f.fm_about, e.embedding
+            FROM memory_files f
+            JOIN memory_embeddings e ON e.file_id = f.id
+        """).fetchall()
+
+    scored = []
+    for r in rows:
+        emb = unpack_embedding(r[8])
+        sim = cosine_similarity(query_emb, emb)
+        scored.append((sim, r))
+
+    scored.sort(key=lambda x: -x[0])
+    return [
+        {"path": r[1], "persona": r[2], "relative_path": r[3], "type": r[4],
+         "importance": r[5], "status": r[6], "about": r[7], "similarity": round(sim, 4)}
+        for sim, r in scored[:limit]
+    ]
+
+
+def memory_stats(conn: sqlite3.Connection, persona: Optional[str] = None) -> dict:
+    """Get memory corpus statistics."""
+    where = "WHERE persona = ?" if persona else ""
+    params = [persona] if persona else []
+
+    total = conn.execute(f"SELECT COUNT(*) FROM memory_files {where}", params).fetchone()[0]
+    by_type = conn.execute(f"SELECT fm_type, COUNT(*) FROM memory_files {where} GROUP BY fm_type ORDER BY COUNT(*) DESC", params).fetchall()
+    by_status = conn.execute(f"SELECT fm_status, COUNT(*) FROM memory_files {where} GROUP BY fm_status ORDER BY COUNT(*) DESC", params).fetchall()
+    by_persona = conn.execute("SELECT persona, COUNT(*) FROM memory_files GROUP BY persona ORDER BY COUNT(*) DESC").fetchall()
+
+    return {
+        "total_files": total,
+        "by_type": {r[0] or "unknown": r[1] for r in by_type},
+        "by_status": {r[0] or "unknown": r[1] for r in by_status},
+        "by_persona": {r[0]: r[1] for r in by_persona},
+    }
+
+
+def memory_gaps(conn: sqlite3.Connection, persona: Optional[str] = None) -> dict:
+    """Detect knowledge gaps using graph analysis."""
+    try:
+        import networkx as nx
+    except ImportError:
+        return {"error": "networkx not installed. pip install networkx"}
+
+    where = "WHERE persona = ?" if persona else ""
+    params = [persona] if persona else []
+
+    rows = conn.execute(f"""
+        SELECT id, path, persona, relative_path, fm_type, fm_importance, fm_tags, fm_about
+        FROM memory_files {where}
+    """, params).fetchall()
+
+    if not rows:
+        return {"error": "No files found", "gaps": [], "clusters": [], "bridges": []}
+
+    G = nx.Graph()
+    file_concepts = {}
+
+    for r in rows:
+        file_id, rel_path = r[0], r[3]
+        fm_type = r[4] or "unknown"
+        tags = json.loads(r[6]) if r[6] else []
+        about = str(r[7]) if r[7] else ""
+
+        concepts = set()
+        for tag in tags:
+            concepts.add(str(tag).lower())
+        if about:
+            concepts.add(about.lower())
+        concepts.add(fm_type.lower())
+        stem = Path(rel_path).stem.replace("-", " ").replace("_", " ").lower()
+        for word in stem.split():
+            if len(word) > 3:
+                concepts.add(word)
+
+        file_concepts[file_id] = concepts
+        G.add_node(file_id, path=rel_path, persona=r[2], type=fm_type,
+                    importance=r[5], concepts=list(concepts))
+
+    file_ids = list(file_concepts.keys())
+    for i in range(len(file_ids)):
+        for j in range(i + 1, len(file_ids)):
+            shared = file_concepts[file_ids[i]] & file_concepts[file_ids[j]]
+            if shared:
+                G.add_edge(file_ids[i], file_ids[j], weight=len(shared))
+
+    components = list(nx.connected_components(G))
+    clusters = []
+    for comp in sorted(components, key=len, reverse=True)[:5]:
+        files_in = [{"path": G.nodes[n]["path"], "type": G.nodes[n]["type"]} for n in comp]
+        all_concepts = set()
+        for n in comp:
+            all_concepts.update(G.nodes[n].get("concepts", []))
+        clusters.append({"size": len(comp), "files": files_in[:10], "top_concepts": sorted(all_concepts)[:15]})
+
+    isolated = [{"path": G.nodes[n]["path"], "type": G.nodes[n]["type"]} for n in nx.isolates(G)]
+
+    return {
+        "total_nodes": len(G.nodes), "total_edges": len(G.edges),
+        "connected_components": len(components),
+        "clusters": clusters, "isolated_files": isolated[:20],
+    }
+
+
+def consolidation_report(conn: sqlite3.Connection, persona: Optional[str] = None) -> dict:
+    """Dry-run analysis of what consolidation would do. Does NOT modify anything."""
+    where = "WHERE persona = ?" if persona else ""
+    params = [persona] if persona else []
+    now = datetime.now()
+
+    rows = conn.execute(f"""
+        SELECT id, path, persona, relative_path, fm_type, fm_importance,
+               fm_created, fm_last_accessed, fm_access_count, fm_status
+        FROM memory_files {where}
+    """, params).fetchall()
+
+    stale_candidates = []
+    archive_candidates = []
+
+    for r in rows:
+        importance = r[5]
+        if importance is None:
+            continue
+
+        last_accessed = r[7]
+        days_since = 30  # default
+        if last_accessed:
+            try:
+                days_since = (now - datetime.fromisoformat(str(last_accessed))).days
+            except (ValueError, TypeError):
+                pass
+        elif r[6]:
+            try:
+                days_since = (now - datetime.fromisoformat(str(r[6]))).days
+            except (ValueError, TypeError):
+                pass
+
+        decayed = max(0, importance - IMPORTANCE_DECAY_RATE * days_since)
+        status = r[9] or "active"
+
+        if status == "active" and decayed < MIN_IMPORTANCE_ACTIVE:
+            stale_candidates.append({"path": r[3], "persona": r[2],
+                                     "importance": importance, "decayed": round(decayed, 2), "type": r[4]})
+
+        if status in ("active", "stale") and decayed < MIN_IMPORTANCE_STALE:
+            archive_candidates.append({"path": r[3], "persona": r[2],
+                                       "importance": importance, "decayed": round(decayed, 2), "type": r[4]})
+
+    return {
+        "total_analyzed": len(rows),
+        "stale_candidates": stale_candidates,
+        "archive_candidates": archive_candidates,
+        "summary": {
+            "would_mark_stale": len(stale_candidates),
+            "would_archive": len(archive_candidates),
+        }
+    }
+
+
+def mark_failure(conn: sqlite3.Connection, file_path: str) -> bool:
+    """Increment failure_count for a memory file. Returns True if found."""
+    path_str = file_path.replace("\\", "/")
+    row = conn.execute("SELECT id, fm_failure_count FROM memory_files WHERE path LIKE ?",
+                        (f"%{path_str}%",)).fetchone()
+    if not row:
+        return False
+    new_count = (row[1] or 0) + 1
+    conn.execute("UPDATE memory_files SET fm_failure_count = ? WHERE id = ?", (new_count, row[0]))
+    conn.commit()
+    return True
