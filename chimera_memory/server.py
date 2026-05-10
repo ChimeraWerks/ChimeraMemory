@@ -40,6 +40,97 @@ def get_default_db_path() -> Path:
     return db_dir / "transcript.db"
 
 
+def _resolved_path(value: str | Path | None) -> str | None:
+    if value is None:
+        return None
+    return str(Path(value).expanduser())
+
+
+def _env_provenance(key: str) -> dict[str, str]:
+    return {"source": "env", "key": key}
+
+
+def _missing_provenance(key: str) -> dict[str, str]:
+    return {"source": "missing", "key": key}
+
+
+def _identity_field(value: object, key: str) -> tuple[object, dict[str, str]]:
+    if value is None:
+        return None, _missing_provenance(key)
+    return value, _env_provenance(key)
+
+
+def resolve_memory_whereami() -> dict:
+    """Resolve Chimera Memory runtime paths and identity with provenance."""
+    from .config import load_config_with_provenance
+    from .identity import load_identity_from_env
+
+    config, config_provenance = load_config_with_provenance()
+    identity = load_identity_from_env()
+
+    resolved: dict[str, object] = {}
+    provenance: dict[str, dict[str, str]] = {}
+
+    db_env = os.environ.get("TRANSCRIPT_DB_PATH", "").strip()
+    if db_env:
+        resolved["db_path"] = _resolved_path(db_env)
+        provenance["db_path"] = _env_provenance("TRANSCRIPT_DB_PATH")
+    else:
+        resolved["db_path"] = str(get_default_db_path())
+        provenance["db_path"] = {
+            "source": "default",
+            "function": "get_default_db_path",
+        }
+
+    jsonl_dir = config.get("jsonl_dir")
+    if jsonl_dir:
+        resolved["jsonl_dir"] = _resolved_path(str(jsonl_dir))
+        provenance["jsonl_dir"] = config_provenance.get("jsonl_dir", {"source": "unknown"})
+    else:
+        resolved["jsonl_dir"] = str(get_default_jsonl_dir())
+        provenance["jsonl_dir"] = {
+            "source": "default",
+            "function": "get_default_jsonl_dir",
+        }
+
+    resolved["transcript_persona"] = config.get("persona")
+    provenance["transcript_persona"] = config_provenance.get("persona", {"source": "unknown"})
+
+    resolved["client"] = config.get("client")
+    provenance["client"] = config_provenance.get("client", {"source": "unknown"})
+
+    field_specs = {
+        "persona_id": (identity.persona_id, "CHIMERA_PERSONA_ID"),
+        "persona_name": (identity.persona_name, "CHIMERA_PERSONA_NAME"),
+        "persona_root": (_resolved_path(identity.persona_root), "CHIMERA_PERSONA_ROOT"),
+        "personas_dir": (_resolved_path(identity.personas_dir), "CHIMERA_PERSONAS_DIR"),
+        "shared_root": (_resolved_path(identity.shared_root), "CHIMERA_SHARED_ROOT"),
+    }
+    for field, (value, env_key) in field_specs.items():
+        resolved[field], provenance[field] = _identity_field(value, env_key)
+
+    persona_db_root = os.environ.get("CHIMERA_MEMORY_PERSONA_DB_ROOT", "").strip()
+    if persona_db_root:
+        resolved["persona_db_root"] = _resolved_path(persona_db_root)
+        provenance["persona_db_root"] = _env_provenance("CHIMERA_MEMORY_PERSONA_DB_ROOT")
+    else:
+        resolved["persona_db_root"] = None
+        provenance["persona_db_root"] = {
+            "source": "default",
+            "function": "chimera_memory.paths.persona_db_root",
+        }
+
+    warnings = identity.warnings()
+    if persona_db_root and db_env:
+        warnings.append("CHIMERA_MEMORY_PERSONA_DB_ROOT is set but TRANSCRIPT_DB_PATH overrides db_path")
+
+    return {
+        "resolved": resolved,
+        "provenance": provenance,
+        "warnings": warnings,
+    }
+
+
 def create_server():
     """Create and configure the MCP server with tools."""
     try:
@@ -84,6 +175,11 @@ def create_server():
             client = _config.get("client") or os.environ.get("CHIMERA_CLIENT")
             _state["indexer"] = Indexer(_get_db(), jsonl_dir, persona=persona, parser_format=client)
         return _state["indexer"]
+
+    @server.tool()
+    def memory_whereami() -> str:
+        """Show resolved Chimera Memory runtime paths, identity, and provenance."""
+        return json.dumps(resolve_memory_whereami(), indent=2)
 
     @server.tool()
     def discord_recall(
@@ -722,6 +818,109 @@ def create_server():
             typ = r.get('type') or '?'
             lines.append(f"{r['surprise']:.3f}    | {str(imp):>9} | {str(typ):<4} | {r['path']}")
         return "\n".join(lines)
+
+    @server.tool()
+    def memory_whereami() -> str:
+        """Report the resolved configuration of this MCP server in one call.
+
+        Returns JSON with three sections:
+          - resolved: the actual values this server uses (db_path, jsonl_dir,
+            persona identity, client).
+          - provenance: where each value came from — the env var name, the
+            config file key, or "default" / "unset". This is the load-bearing
+            part. Without it you can read the values but can't tell whether
+            you're on default or override.
+          - warnings: PersonaIdentity validation issues (id-shape, missing dirs).
+
+        Use this when debugging "where did my memory go" or "is my config
+        right". Replaces grep across mcp_servers.json + Hermes config.yaml +
+        the runtime's env block.
+        """
+        import json as _json
+        from .identity import load_identity_from_env
+
+        identity = load_identity_from_env()
+
+        # db_path: env TRANSCRIPT_DB_PATH > get_default_db_path()
+        db_env = os.environ.get("TRANSCRIPT_DB_PATH", "").strip()
+        if db_env:
+            db_path = db_env
+            db_provenance = {"source": "env", "key": "TRANSCRIPT_DB_PATH"}
+        else:
+            db_path = str(get_default_db_path())
+            db_provenance = {
+                "source": "default",
+                "function": "chimera_memory.server.get_default_db_path",
+                "note": "~/.chimera-memory/transcript.db (legacy unscoped default)",
+            }
+
+        # jsonl_dir: config jsonl_dir > env TRANSCRIPT_JSONL_DIR > get_default_jsonl_dir()
+        jsonl_config = _config.get("jsonl_dir")
+        jsonl_env = os.environ.get("TRANSCRIPT_JSONL_DIR", "").strip()
+        if jsonl_config:
+            jsonl_dir = str(jsonl_config)
+            jsonl_provenance = {"source": "config", "key": "jsonl_dir"}
+        elif jsonl_env:
+            jsonl_dir = jsonl_env
+            jsonl_provenance = {"source": "env", "key": "TRANSCRIPT_JSONL_DIR"}
+        else:
+            jsonl_dir = str(get_default_jsonl_dir())
+            jsonl_provenance = {"source": "default", "function": "chimera_memory.server.get_default_jsonl_dir"}
+
+        # client: config client > env CHIMERA_CLIENT > unset
+        client_config = _config.get("client")
+        client_env = os.environ.get("CHIMERA_CLIENT", "").strip()
+        if client_config:
+            client_value = client_config
+            client_provenance = {"source": "config", "key": "client"}
+        elif client_env:
+            client_value = client_env
+            client_provenance = {"source": "env", "key": "CHIMERA_CLIENT"}
+        else:
+            client_value = None
+            client_provenance = {"source": "unset"}
+
+        # Persona fields (all env-only)
+        persona_env_keys = {
+            "persona": "TRANSCRIPT_PERSONA",
+            "persona_id": "CHIMERA_PERSONA_ID",
+            "persona_name": "CHIMERA_PERSONA_NAME",
+            "persona_root": "CHIMERA_PERSONA_ROOT",
+            "personas_dir": "CHIMERA_PERSONAS_DIR",
+            "shared_root": "CHIMERA_SHARED_ROOT",
+        }
+        persona_values = {
+            "persona": identity.persona,
+            "persona_id": identity.persona_id,
+            "persona_name": identity.persona_name,
+            "persona_root": str(identity.persona_root) if identity.persona_root else None,
+            "personas_dir": str(identity.personas_dir) if identity.personas_dir else None,
+            "shared_root": str(identity.shared_root) if identity.shared_root else None,
+        }
+        persona_provenance = {}
+        for key, env_key in persona_env_keys.items():
+            if persona_values[key]:
+                persona_provenance[key] = {"source": "env", "key": env_key}
+            else:
+                persona_provenance[key] = {"source": "unset", "key": env_key}
+
+        payload = {
+            "resolved": {
+                "db_path": db_path,
+                "jsonl_dir": jsonl_dir,
+                "client": client_value,
+                "display_name": identity.display_name,
+                **persona_values,
+            },
+            "provenance": {
+                "db_path": db_provenance,
+                "jsonl_dir": jsonl_provenance,
+                "client": client_provenance,
+                **persona_provenance,
+            },
+            "warnings": identity.warnings(),
+        }
+        return _json.dumps(payload, indent=2, sort_keys=True)
 
     @server.tool()
     def memory_zones(persona: str | None = None) -> str:

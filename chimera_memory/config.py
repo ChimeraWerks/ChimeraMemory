@@ -89,6 +89,19 @@ DEFAULTS = {
     "branch_detection": False,
 }
 
+ENV_MAP = {
+    "TRANSCRIPT_RETENTION_DAYS": "retention_days",
+    "TRANSCRIPT_MAX_DB_SIZE_MB": "max_db_size_mb",
+    "TRANSCRIPT_INDEX_TOOL_CALLS": "index_tool_calls",
+    "TRANSCRIPT_INDEX_TOOL_RESULTS": "index_tool_results",
+    "TRANSCRIPT_INDEX_SYSTEM": "index_system",
+    "TRANSCRIPT_PROGRESSIVE_DISCLOSURE": "progressive_disclosure",
+    "TRANSCRIPT_PERSONA": "persona",
+    "CHIMERA_CLIENT": "client",
+    "TRANSCRIPT_JSONL_DIR": "jsonl_dir",
+    "TRANSCRIPT_BRANCH_DETECTION": "branch_detection",
+}
+
 
 def ensure_config_exists():
     """Create the config file with defaults if it doesn't exist."""
@@ -103,7 +116,16 @@ def load_config() -> dict[str, Any]:
 
     Returns a dict with all config values resolved.
     """
+    config, _provenance = load_config_with_provenance()
+    return config
+
+
+def load_config_with_provenance() -> tuple[dict[str, Any], dict[str, dict[str, str]]]:
+    """Load configuration and record where each value came from."""
     config = dict(DEFAULTS)
+    provenance: dict[str, dict[str, str]] = {
+        key: {"source": "default"} for key in DEFAULTS
+    }
 
     # Layer 1: Read config file (if exists)
     if CONFIG_PATH.exists():
@@ -111,27 +133,23 @@ def load_config() -> dict[str, Any]:
         for key, value in file_config.items():
             if key in DEFAULTS:
                 config[key] = _cast_value(key, value)
+                provenance[key] = {
+                    "source": "config",
+                    "path": str(CONFIG_PATH),
+                    "key": key,
+                }
 
     # Layer 2: Environment variables override everything
-    env_map = {
-        "TRANSCRIPT_RETENTION_DAYS": "retention_days",
-        "TRANSCRIPT_MAX_DB_SIZE_MB": "max_db_size_mb",
-        "TRANSCRIPT_INDEX_TOOL_CALLS": "index_tool_calls",
-        "TRANSCRIPT_INDEX_TOOL_RESULTS": "index_tool_results",
-        "TRANSCRIPT_INDEX_SYSTEM": "index_system",
-        "TRANSCRIPT_PROGRESSIVE_DISCLOSURE": "progressive_disclosure",
-        "TRANSCRIPT_PERSONA": "persona",
-        "CHIMERA_CLIENT": "client",
-        "TRANSCRIPT_JSONL_DIR": "jsonl_dir",
-        "TRANSCRIPT_BRANCH_DETECTION": "branch_detection",
-    }
-
-    for env_key, config_key in env_map.items():
+    for env_key, config_key in ENV_MAP.items():
         env_val = os.environ.get(env_key)
         if env_val is not None:
             config[config_key] = _cast_value(config_key, env_val)
+            provenance[config_key] = {
+                "source": "env",
+                "key": env_key,
+            }
 
-    return config
+    return config, provenance
 
 
 def _parse_yaml_simple(text: str) -> dict:
