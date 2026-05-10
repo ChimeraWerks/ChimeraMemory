@@ -184,9 +184,12 @@ def score_all_surprise(conn: sqlite3.Connection, persona: Optional[str] = None) 
 
 # ─── Zone-Based Memory Loading ───────────────────────────────────────
 
-# Zone thresholds
-ZONE_CORE = 0.80      # Always loaded every session
-ZONE_ACTIVE = 0.60    # Loaded when tags match current task
+# Zone thresholds (bootstrap values until runtime context evaluation exists)
+# Max achievable score without context_match/spec_alignment boost is 0.775
+# (0.25 confidence + 0.20 frequency + 0.15 recency + 0.10 context baseline + 0.075 spec baseline)
+# Thresholds tuned so importance-10 memories with moderate access land in CORE.
+ZONE_CORE = 0.70      # Always loaded every session
+ZONE_ACTIVE = 0.55    # Loaded when tags match current task
 ZONE_PASSIVE = 0.30   # Loaded only on direct query
 # Below ZONE_PASSIVE = archive (never auto-loaded)
 

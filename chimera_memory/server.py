@@ -54,6 +54,17 @@ def create_server():
     from .config import load_config, ensure_config_exists
     ensure_config_exists()
     _config = load_config()
+    from .identity import load_identity_from_env
+    _identity = load_identity_from_env()
+    if _identity.persona_id or _identity.persona_name or _identity.client:
+        log.info(
+            "persona identity: id=%s name=%s client=%s",
+            _identity.persona_id or "-",
+            _identity.display_name,
+            _identity.client or "-",
+        )
+    for warning in _identity.warnings():
+        log.warning("persona identity warning: %s", warning)
 
     # Lazy-init DB and indexer
     _state = {}
@@ -70,7 +81,8 @@ def create_server():
             from .indexer import Indexer
             jsonl_dir = _config.get("jsonl_dir") or os.environ.get("TRANSCRIPT_JSONL_DIR") or str(get_default_jsonl_dir())
             persona = _config.get("persona")
-            _state["indexer"] = Indexer(_get_db(), jsonl_dir, persona=persona)
+            client = _config.get("client") or os.environ.get("CHIMERA_CLIENT")
+            _state["indexer"] = Indexer(_get_db(), jsonl_dir, persona=persona, parser_format=client)
         return _state["indexer"]
 
     @server.tool()
@@ -463,13 +475,71 @@ def create_server():
         return _state["memory_conn"]
 
     def _ensure_memory_indexed():
-        """Ensure memory files are indexed on first use."""
+        """Ensure memory files are indexed on first use, and start the live watcher.
+
+        Graceful degradation (Day 25 fix): if embeddings fail (e.g. ONNX cache
+        missing/broken), fall back to FTS-only reindex rather than crashing the
+        server. The whole chimera-memory session dying because the embedding
+        model can't load is what caused every previous MCP disconnect.
+
+        Step-granular logging (Day 25 fix): each phase logs entry + duration so
+        the NEXT slow-path disconnect shows which step hung.
+        """
         if "memory_indexed" not in _state:
-            from .memory import full_reindex
+            import logging as _logging, time as _time
+            _log = _logging.getLogger("chimera_memory.indexing")
+            _log.info("_ensure_memory_indexed: starting")
+            t_total = _time.time()
+
+            _log.info("  [1/4] importing memory module")
+            from .memory import full_reindex, start_memory_watcher
+
+            _log.info("  [2/4] resolving personas_dir")
             personas_dir = Path(os.environ.get("CHIMERA_PERSONAS_DIR", "C:/Github/ChimeraPersonas/personas"))
+            _log.info("     personas_dir=%s", personas_dir)
+
+            _log.info("  [3/4] getting memory conn")
             conn = _get_memory_conn()
-            full_reindex(conn, personas_dir, embed=True)
-            _state["memory_indexed"] = True
+
+            _log.info("  [4/4] full_reindex starting (embed=True)")
+            t0 = _time.time()
+            try:
+                full_reindex(conn, personas_dir, embed=True)
+                _state["memory_indexed"] = "full"
+                _log.info("  [4/4] full_reindex COMPLETED in %.2fs (mode=full)", _time.time() - t0)
+            except Exception as exc:
+                _log.warning(
+                    "  [4/4] full_reindex with embeddings FAILED in %.2fs: %s",
+                    _time.time() - t0, exc
+                )
+                t1 = _time.time()
+                try:
+                    full_reindex(conn, personas_dir, embed=False)
+                    _state["memory_indexed"] = "fts-only"
+                    _log.info(
+                        "  [4/4] FTS-only fallback succeeded in %.2fs. "
+                        "Run `chimera-memory reindex` to rebuild embeddings later.",
+                        _time.time() - t1
+                    )
+                except Exception:
+                    _log.exception(
+                        "  [4/4] FTS-only fallback ALSO FAILED in %.2fs — memory_search unavailable",
+                        _time.time() - t1
+                    )
+                    _state["memory_indexed"] = "failed"
+                    # Don't re-raise: server stays alive, specific tools may error out.
+
+            _log.info("_ensure_memory_indexed: done in %.2fs total (mode=%s)",
+                      _time.time() - t_total, _state.get("memory_indexed"))
+
+            # Live file watcher: incremental upsert/delete on .md changes.
+            # Opens its own connections per event, so it's safe alongside the cached memory_conn.
+            try:
+                observer = start_memory_watcher(_get_db(), personas_dir)
+                if observer is not None:
+                    _state["memory_watcher"] = observer
+            except Exception:
+                _logging.getLogger(__name__).exception("Failed to start memory file watcher")
 
     @server.tool()
     def memory_search(query: str, persona: str | None = None, limit: int = 20) -> str:
@@ -648,7 +718,9 @@ def create_server():
         lines = ["Surprise | Importance | Type | Path"]
         lines.append("---------|-----------|------|-----")
         for r in results[:limit]:
-            lines.append(f"{r['surprise']:.3f}    | {r.get('importance', '?'):>9} | {r.get('type', '?'):<4} | {r['path']}")
+            imp = r.get('importance') or '?'
+            typ = r.get('type') or '?'
+            lines.append(f"{r['surprise']:.3f}    | {str(imp):>9} | {str(typ):<4} | {r['path']}")
         return "\n".join(lines)
 
     @server.tool()
@@ -685,11 +757,149 @@ def create_server():
     return server
 
 
+def _configure_diagnostic_logging() -> Path:
+    """Add a RotatingFileHandler so we have server-side logs across MCP disconnects.
+
+    Claude Code does not persist MCP server stderr, so previously every crash
+    was a black box. This writes to `~/.chimera-memory/server.log` with 5MB
+    rotation, 3 backups. Stays alongside stderr — doesn't replace it.
+    """
+    import sys as _sys
+    import traceback as _traceback
+    from logging.handlers import RotatingFileHandler
+
+    log_dir = Path.home() / ".chimera-memory"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "server.log"
+
+    file_handler = RotatingFileHandler(
+        str(log_path), maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s | %(process)d | %(name)s | %(levelname)s | %(message)s"
+    ))
+    logging.getLogger().addHandler(file_handler)
+    logging.getLogger().setLevel(logging.DEBUG)
+
+    # Unhandled-exception hook — captures any crash before the process dies.
+    def _excepthook(exc_type, exc_value, exc_tb):
+        logging.getLogger("chimera_memory").critical(
+            "UNHANDLED EXCEPTION — server is about to die\n%s",
+            "".join(_traceback.format_exception(exc_type, exc_value, exc_tb)),
+        )
+        # Chain to default so CC still sees it on stderr.
+        _sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+    _sys.excepthook = _excepthook
+    return log_path
+
+
+def _prewarm_embeddings() -> None:
+    """Eager-load the embedding model at server startup.
+
+    Day 25 fix: previously, fastembed's cache-validation-against-HuggingFace
+    happened on the first tool call that needed embeddings. That validation
+    blocked 10+ minutes on slow networks, outrunning Claude Code's tool-call
+    timeout and causing `[Tool result missing due to internal error]`.
+
+    Pre-warming at startup moves the slow path to server boot (where CC doesn't
+    time out) so every subsequent tool call is fast. Also sets HF_HUB_OFFLINE
+    if the cache looks intact, to skip the HF validation round-trip entirely.
+    """
+    log = logging.getLogger("chimera_memory.prewarm")
+    try:
+        # If local cache looks intact, skip HF validation on subsequent imports.
+        from pathlib import Path
+        cache_root = Path.home() / ".chimera-memory" / "cache"
+        onnx_files = list(cache_root.rglob("model_optimized.onnx")) if cache_root.exists() else []
+        if onnx_files:
+            os.environ.setdefault("HF_HUB_OFFLINE", "1")
+            log.info("Cache looks intact (%d ONNX file(s)). Set HF_HUB_OFFLINE=1 to skip HF roundtrip.", len(onnx_files))
+        else:
+            log.info("Cache empty — fastembed will download the model. This is a one-time cost.")
+
+        log.info("Pre-warming embedding model (this blocks startup but prevents tool-call timeouts later)...")
+        import time
+        t0 = time.time()
+        from .embeddings import _get_model
+        _get_model()
+        log.info("Embedding model pre-warmed in %.1fs", time.time() - t0)
+    except Exception:
+        log.exception(
+            "Pre-warm FAILED. Server will start anyway; memory_search tools will degrade "
+            "to FTS-only per the _ensure_memory_indexed fallback."
+        )
+
+
+def _start_transcript_indexer() -> object | None:
+    """Backfill any JSONL files written while the server was down, then start a
+    live watcher that ingests new entries incrementally.
+
+    Day 25 fix: previously the Indexer was lazy-instantiated only when the
+    `transcript_backfill` MCP tool was invoked, and even then it did a one-shot
+    backfill and stopped. The `start_watching()` code existed but was never
+    called. Result: every session between `transcript_backfill` invocations
+    accumulated JSONL entries that never made it into the DB. CEO's Day 22-24
+    transcripts were invisible to memory_search and semantic_search for 3 days.
+
+    This fix: backfill on startup (catches up missed JSONL) + start_watching
+    (stay live — watchdog on_modified fires within ~100ms, 30s poll safety net).
+    """
+    log = logging.getLogger("chimera_memory.indexer-bootstrap")
+    try:
+        from .db import TranscriptDB
+        from .indexer import Indexer
+        from .config import load_config
+
+        db_path = os.environ.get("TRANSCRIPT_DB_PATH", str(get_default_db_path()))
+        db = TranscriptDB(db_path)
+        cfg = load_config()
+        jsonl_dir = cfg.get("jsonl_dir") or os.environ.get("TRANSCRIPT_JSONL_DIR") or str(get_default_jsonl_dir())
+        persona = cfg.get("persona")
+        client = cfg.get("client") or os.environ.get("CHIMERA_CLIENT")
+        indexer = Indexer(db, jsonl_dir, persona=persona, parser_format=client)
+
+        log.info("Backfilling transcripts from %s ...", jsonl_dir)
+        stats = indexer.backfill()
+        log.info("Backfill complete: %s", stats)
+
+        log.info("Starting live file watcher ...")
+        observer = indexer.start_watching()
+        log.info("Transcript watcher active (watchdog + 30s poll safety net)")
+        return indexer
+    except Exception:
+        log.exception(
+            "Transcript indexer bootstrap FAILED. Server will start anyway; "
+            "discord_recall / semantic_search will return stale data until manual `transcript_backfill`."
+        )
+        return None
+
+
 def main():
     """Entry point for running the MCP server."""
     logging.basicConfig(level=logging.INFO, format="%(name)s | %(levelname)s | %(message)s")
-    server = create_server()
-    server.run(transport="stdio")
+    log_path = _configure_diagnostic_logging()
+    logging.getLogger("chimera_memory").info(
+        "chimera-memory server starting (pid=%s, log=%s)", os.getpid(), log_path
+    )
+    _prewarm_embeddings()
+    _indexer = _start_transcript_indexer()  # keep reference so watcher threads don't get GC'd
+    try:
+        server = create_server()
+        server.run(transport="stdio")
+    except KeyboardInterrupt:
+        logging.getLogger("chimera_memory").info("shutdown via KeyboardInterrupt")
+    except Exception:
+        logging.getLogger("chimera_memory").exception("server.run() crashed")
+        raise
+    finally:
+        if _indexer is not None:
+            try:
+                _indexer.stop_watching()
+            except Exception:
+                pass
+        logging.getLogger("chimera_memory").info("server exiting (pid=%s)", os.getpid())
 
 
 if __name__ == "__main__":

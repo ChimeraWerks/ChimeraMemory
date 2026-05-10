@@ -4,7 +4,7 @@ import json
 import tempfile
 import shutil
 from pathlib import Path
-from chimera_memory.parser import parse_jsonl_file, extract_session_metadata
+from chimera_memory.parser import parse_jsonl_file, extract_session_metadata, get_parser
 
 tmpdir = None
 passed = 0
@@ -199,6 +199,52 @@ def run():
     test("Full parse gets both", len(r) == 2)
     r2 = [x for x in parse_jsonl_file(path, start_offset=offset) if not isinstance(x, int)]
     test("Offset parse gets second only", len(r2) == 1 and r2[0]["content"] == "second line")
+
+    # 21. Codex parser: Discord inbound, assistant message, tool metadata
+    codex_parser = get_parser("codex")
+    codex_path = write_jsonl("codex.jsonl", [
+        {"timestamp": "2026-05-02T10:00:00Z", "type": "session_meta", "payload": {
+            "id": "codex-session-1",
+            "timestamp": "2026-05-02T10:00:00Z",
+            "cwd": "C:/repo/personas/developer/asa",
+            "git": {"branch": "main"},
+        }},
+        {"timestamp": "2026-05-02T10:00:01Z", "type": "event_msg", "payload": {
+            "type": "thread_name_updated",
+            "thread_name": "Asa - Day 1",
+        }},
+        {"timestamp": "2026-05-02T10:00:02Z", "type": "event_msg", "payload": {
+            "type": "user_message",
+            "message": "[Discord context]\nchat_id=123\nroute_chat_id=123\nchannel_name=asa-developer\nmessage_id=456\nauthor_id=111\nauthor_name=Charles - CEO\ntimestamp=2026-05-02T10:00:02+00:00\n\nuser_id=111: Check Codex parser",
+            "images": [],
+            "local_images": [],
+            "text_elements": [],
+        }},
+        {"timestamp": "2026-05-02T10:00:03Z", "type": "event_msg", "payload": {
+            "type": "agent_message",
+            "phase": "final",
+            "message": "Parser wired.",
+        }},
+        {"timestamp": "2026-05-02T10:00:04Z", "type": "response_item", "payload": {
+            "type": "function_call",
+            "call_id": "call-1",
+            "name": "shell_command",
+            "arguments": "{\"command\":\"echo ok\"}",
+        }},
+        {"timestamp": "2026-05-02T10:00:05Z", "type": "response_item", "payload": {
+            "type": "function_call_output",
+            "call_id": "call-1",
+            "output": "ok",
+        }},
+    ])
+    r = [x for x in codex_parser.parse_file(codex_path) if not isinstance(x, int)]
+    types = [x["entry_type"] for x in r]
+    test("Codex parser selects recursively", codex_parser.recursive is True)
+    test("Codex Discord inbound", "discord_inbound" in types and [x for x in r if x["entry_type"] == "discord_inbound"][0]["chat_id"] == "123")
+    test("Codex assistant message", "assistant_message" in types and [x for x in r if x["entry_type"] == "assistant_message"][0]["content"] == "Parser wired.")
+    test("Codex tool metadata", "tool_call" in types and "tool_result" in types)
+    meta = codex_parser.extract_session_metadata(codex_path)
+    test("Codex session metadata", meta["session_id"] == "codex-session-1" and meta["title"] == "Asa - Day 1" and meta["git_branch"] == "main")
 
     teardown()
     print(f"\nParser tests: {passed}/{passed + failed}")

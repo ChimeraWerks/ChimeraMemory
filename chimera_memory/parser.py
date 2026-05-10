@@ -1,16 +1,28 @@
-"""Parse Claude Code JSONL session files into structured transcript entries.
+"""Parse local agent JSONL session files into structured transcript entries.
 
-This module implements the Claude Code JSONL parser, the default parser
-for chimera-memory. Additional parsers (Codex, Hermes, etc.) can be
-registered via the parser registry.
+Claude Code remains the default parser for ``.jsonl`` files. Other clients
+select their parser explicitly through the parser registry, normally via
+``CHIMERA_CLIENT``.
 """
 
 import json
+import os
 import re
 import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Generator
+
+
+def _persona_author() -> str:
+    """Author tag for internal (CLI) assistant content.
+
+    Returns TRANSCRIPT_PERSONA env var if set (e.g. 'sarah'), else 'assistant'.
+    Per-persona deployments (.mcp.json sets TRANSCRIPT_PERSONA) get the
+    persona name, which makes filter-by-author useful. Standalone deployments
+    fall back to the generic 'assistant' tag.
+    """
+    return os.environ.get("TRANSCRIPT_PERSONA", "").strip() or "assistant"
 
 log = logging.getLogger(__name__)
 
@@ -36,6 +48,11 @@ class BaseParser(ABC):
     def file_extensions(self) -> list[str]:
         """File extensions this parser handles (e.g. ['.jsonl'])."""
         ...
+
+    @property
+    def recursive(self) -> bool:
+        """Whether the source root should be scanned/watched recursively."""
+        return False
 
     @abstractmethod
     def parse_file(self, path: Path, start_offset: int = 0) -> Generator[dict, None, int]:
@@ -80,6 +97,15 @@ def register_parser(parser_class: type[BaseParser]):
 
 def get_parser(format_or_ext: str) -> BaseParser:
     """Get a parser instance by format name or file extension."""
+    aliases = {
+        "claude": "claude-code",
+        "claude_code": "claude-code",
+        "claude-code": "claude-code",
+        "codex": "codex",
+        "openai-codex": "codex",
+        "openai_codex": "codex",
+    }
+    format_or_ext = aliases.get((format_or_ext or "").lower(), format_or_ext)
     cls = _registry.get(format_or_ext)
     if cls is None:
         # Default to Claude Code parser
@@ -144,6 +170,33 @@ class ClaudeCodeParser(BaseParser):
 register_parser(ClaudeCodeParser)
 
 
+class CodexParser(BaseParser):
+    """Parser for Codex rollout JSONL session files."""
+
+    @property
+    def format_name(self) -> str:
+        return "codex"
+
+    @property
+    def file_extensions(self) -> list[str]:
+        # Codex and Claude both use .jsonl, so Codex is selected by client
+        # name instead of claiming the extension globally.
+        return []
+
+    @property
+    def recursive(self) -> bool:
+        return True
+
+    def parse_file(self, path: Path, start_offset: int = 0) -> Generator[dict, None, int]:
+        return parse_codex_jsonl_file(path, start_offset)
+
+    def extract_session_metadata(self, path: Path) -> dict:
+        return extract_codex_session_metadata(path)
+
+
+register_parser(CodexParser)
+
+
 # ─── Parsing Implementation ──────────────────────────────────────────
 
 
@@ -203,6 +256,185 @@ def parse_jsonl_file(path: Path, start_offset: int = 0) -> Generator[dict, None,
         if partial:
             final_pos -= len(partial.encode("utf-8"))
         return final_pos
+
+
+CODEX_DISCORD_USER_RE = re.compile(
+    r"^user_id=(?P<author_id>[^:]+):\s?(?P<content>.*)$",
+    re.DOTALL,
+)
+
+
+def parse_codex_jsonl_file(path: Path, start_offset: int = 0) -> Generator[dict, None, int]:
+    """Parse a Codex rollout JSONL file from a byte offset."""
+    session_id = path.stem
+    with open(path, "r", encoding="utf-8") as f:
+        if start_offset > 0:
+            f.seek(start_offset)
+
+        partial = ""
+        for line in f:
+            line = line.rstrip("\n")
+            if not line.strip():
+                continue
+
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                partial = line
+                continue
+
+            if obj.get("type") == "session_meta":
+                payload = obj.get("payload") or {}
+                if isinstance(payload, dict):
+                    session_id = payload.get("id") or session_id
+                continue
+
+            yield from _parse_codex_entry(obj, session_id, obj.get("timestamp", ""))
+
+        final_pos = f.tell()
+        if partial:
+            final_pos -= len(partial.encode("utf-8"))
+        return final_pos
+
+
+def _parse_codex_entry(obj: dict, session_id: str, timestamp: str):
+    payload = obj.get("payload")
+    if not isinstance(payload, dict):
+        return
+
+    outer_type = obj.get("type")
+    payload_type = payload.get("type")
+
+    if outer_type == "event_msg":
+        if payload_type == "user_message":
+            message = payload.get("message")
+            if isinstance(message, str) and message.strip():
+                discord = _parse_codex_discord_context(message)
+                if discord:
+                    yield _make_entry(
+                        session_id=session_id,
+                        entry_type="discord_inbound",
+                        timestamp=discord.get("timestamp") or timestamp,
+                        content=discord["content"],
+                        source="discord",
+                        chat_id=discord.get("chat_id"),
+                        message_id=discord.get("message_id"),
+                        author=discord.get("author_name"),
+                        author_id=discord.get("author_id"),
+                        metadata={
+                            "channel_name": discord.get("channel_name"),
+                            "route_chat_id": discord.get("route_chat_id"),
+                        },
+                    )
+                else:
+                    yield _make_entry(
+                        session_id=session_id,
+                        entry_type="user_message",
+                        timestamp=timestamp,
+                        content=message.strip(),
+                        source="cli",
+                        author="human",
+                    )
+        elif payload_type == "agent_message":
+            message = payload.get("message")
+            if isinstance(message, str) and message.strip():
+                yield _make_entry(
+                    session_id=session_id,
+                    entry_type="assistant_message",
+                    timestamp=timestamp,
+                    content=message.strip(),
+                    source="cli",
+                    author=_persona_author(),
+                    metadata={
+                        "phase": payload.get("phase"),
+                        "has_memory_citation": bool(payload.get("memory_citation")),
+                    },
+                )
+        return
+
+    if outer_type != "response_item":
+        return
+
+    if payload_type in ("function_call", "custom_tool_call", "tool_search_call"):
+        tool_name = payload.get("name") or payload_type
+        raw_arguments = payload.get("arguments", payload.get("input"))
+        arg_keys = []
+        if isinstance(raw_arguments, str):
+            arg_size = len(raw_arguments)
+            try:
+                parsed = json.loads(raw_arguments)
+                if isinstance(parsed, dict):
+                    arg_keys = list(parsed.keys())
+            except json.JSONDecodeError:
+                pass
+        elif raw_arguments is not None:
+            arg_size = len(json.dumps(raw_arguments, default=str))
+            if isinstance(raw_arguments, dict):
+                arg_keys = list(raw_arguments.keys())
+        else:
+            arg_size = 0
+
+        yield _make_entry(
+            session_id=session_id,
+            entry_type="tool_call",
+            timestamp=timestamp,
+            content=None,
+            source="tool",
+            tool_name=str(tool_name),
+            metadata={
+                "call_id": payload.get("call_id"),
+                "argument_size": arg_size,
+                "input_keys": arg_keys,
+                "status": payload.get("status"),
+            },
+        )
+    elif payload_type in ("function_call_output", "custom_tool_call_output", "tool_search_output"):
+        output = payload.get("output")
+        if isinstance(output, str):
+            output_size = len(output)
+        elif output is not None:
+            output_size = len(json.dumps(output, default=str))
+        else:
+            output_size = 0
+        yield _make_entry(
+            session_id=session_id,
+            entry_type="tool_result",
+            timestamp=timestamp,
+            content=None,
+            source="tool",
+            tool_name=payload.get("call_id"),
+            metadata={
+                "call_id": payload.get("call_id"),
+                "output_size": output_size,
+                "status": payload.get("status"),
+            },
+        )
+
+
+def _parse_codex_discord_context(message: str) -> dict | None:
+    if not message.startswith("[Discord context]"):
+        return None
+
+    header, separator, body = message.partition("\n\n")
+    if not separator:
+        return None
+
+    data: dict[str, str] = {}
+    for line in header.splitlines()[1:]:
+        key, sep, value = line.partition("=")
+        if sep:
+            data[key.strip()] = value.strip()
+
+    match = CODEX_DISCORD_USER_RE.match(body.strip())
+    if match:
+        data["author_id"] = data.get("author_id") or match.group("author_id").strip()
+        data["content"] = match.group("content").strip()
+    else:
+        data["content"] = body.strip()
+
+    if not data.get("content"):
+        return None
+    return data
 
 
 def _parse_user_entry(obj: dict, session_id: str, timestamp: str):
@@ -344,6 +576,7 @@ def _parse_assistant_entry(obj: dict, session_id: str, timestamp: str):
                 timestamp=timestamp,
                 content=content,
                 source="cli",
+                author=_persona_author(),
                 metadata={"uuid": uuid},
             )
         return
@@ -436,6 +669,7 @@ def _parse_assistant_entry(obj: dict, session_id: str, timestamp: str):
             timestamp=timestamp,
             content=full_text,
             source="cli",
+            author=_persona_author(),
             metadata={
                 "uuid": uuid,
                 "has_thinking": has_thinking,
@@ -518,6 +752,67 @@ def extract_session_metadata(path: Path) -> dict:
                     exchange_count += 1
 
     # Use filename UUID as fallback session_id
+    if not session_id:
+        session_id = path.stem
+
+    return {
+        "session_id": session_id,
+        "title": title,
+        "git_branch": git_branch,
+        "cwd": cwd,
+        "started_at": first_ts,
+        "ended_at": last_ts,
+        "exchange_count": exchange_count,
+    }
+
+
+def extract_codex_session_metadata(path: Path) -> dict:
+    """Extract session-level metadata from a Codex rollout JSONL file."""
+    session_id = None
+    git_branch = None
+    cwd = None
+    first_ts = None
+    last_ts = None
+    title = None
+    exchange_count = 0
+
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+            ts = obj.get("timestamp")
+            if ts:
+                if not first_ts:
+                    first_ts = ts
+                last_ts = ts
+
+            payload = obj.get("payload")
+            if not isinstance(payload, dict):
+                continue
+
+            if obj.get("type") == "session_meta":
+                session_id = payload.get("id") or session_id
+                cwd = payload.get("cwd") or cwd
+                meta_ts = payload.get("timestamp")
+                if meta_ts and not first_ts:
+                    first_ts = meta_ts
+                git = payload.get("git")
+                if isinstance(git, dict):
+                    git_branch = git.get("branch") or git_branch
+                continue
+
+            payload_type = payload.get("type")
+            if payload_type == "thread_name_updated":
+                title = payload.get("thread_name") or title
+            elif payload_type in ("user_message", "agent_message"):
+                exchange_count += 1
+
     if not session_id:
         session_id = path.stem
 

@@ -1,37 +1,59 @@
 # Chimera Memory
 
-**Perfect recall for coding agents.** Index Claude Code session transcripts into queryable SQLite — zero API calls, sub-millisecond search, works offline.
+**Perfect recall and cognitive memory for any agent harness.** A standalone MCP server that indexes session transcripts into queryable SQLite, adds a curated memory layer with semantic search and zone-based loading, and gives you 20 tools for everything from "what did we talk about yesterday" to "which memories are stale and should decay."
+
+Works with Claude Code, Codex CLI, and Hermes Agent. No required dependency on any other repo.
 
 ## What It Does
 
-Claude Code writes detailed session logs (JSONL files) every time you use it. Chimera Memory watches those files, indexes everything into a local SQLite database, and gives you instant search and recall through MCP tools or the CLI.
+Modern coding agents write detailed session logs (JSONL files) every time you use them. Chimera Memory indexes those files into a local SQLite database, embeds them for semantic search, and layers a curated memory system on top so you can write memories as markdown + YAML frontmatter and query them through the same MCP interface.
 
 ```
-Claude Code writes → JSONL files → Chimera Memory indexes → SQLite DB → You query
+Agent harness writes  →  JSONL files  →  ChimeraMemory indexes  →  SQLite + embeddings  →  You query via MCP
+Your memory files     →  markdown+YAML →  ChimeraMemory indexes  →  FTS5 + zones          →  You query via MCP
 ```
 
-**Before:** To recall past conversations, you'd call Discord APIs, parse raw files, or just... not remember.
+**Two layers, one interface:**
 
-**After:** `discord_recall(search="umbrella")` — instant results from any session, any day.
+- **Transcript layer** — everything the harness has ever said, heard, or tooled. Auto-indexed. Zero effort.
+- **Curated memory layer** — markdown files you deliberately write (facts, episodes, procedural lessons). Opinionated structure. Importance scoring. Zones. Decay. Graph analysis. Optional.
+
+Use whichever layer you want. Both are exposed through the same MCP server.
+
+## Problems It Solves
+
+- **No native query for transcripts.** Claude Code / Codex / Hermes write JSONL session logs but offer no recall API. Without indexing, "what did we discuss last Tuesday" requires opening files manually.
+- **Context loss between sessions.** Agents forget across `/clear` and across days. A queryable transcript DB plus a curated memory layer gives an agent persistent recall.
+- **Curated knowledge degrades silently.** Without decay, importance scoring, or graph analysis, written memories pile up; bad knowledge doesn't get penalized; outdated facts mix with current ones.
+- **No principled "what loads on session start."** Without zones and importance scoring, you load too much (token waste) or too little (forgotten context).
+- **Hidden secrets in transcripts.** Raw JSONL contains tokens, API keys, webhook URLs. A naive grep can leak. Sanitization at index time keeps the DB clean.
+
+Chimera Memory addresses each.
 
 ## Quick Start
 
 ```bash
-# Clone and install
-git clone https://github.com/YourOrg/ChimeraMemory.git
+# Clone and install (editable mode = live source updates)
+git clone https://github.com/ChimeraWerks/ChimeraMemory.git
 cd ChimeraMemory
-pip install .
+pip install -e .
 
 # Index your existing sessions
-chimera-memory backfill --jsonl-dir ~/.claude/projects/YOUR-PROJECT/
+chimera-memory backfill
 
-# Run as MCP server (add to your .mcp.json)
+# Run as MCP server
 chimera-memory serve
 ```
 
-### Add to Claude Code
+`pip install -e .` creates the `chimera-memory` CLI on PATH and adds the Python package via `.pth` so any edit to source flows through immediately on next process spawn. No re-install needed for code changes; only dependency changes (new `pyproject.toml` requires) need a re-run.
 
-Add this to your `.mcp.json`:
+## Integration Patterns (Cross-Runtime)
+
+Chimera Memory works with three agent harnesses today, each with a slightly different "front door":
+
+### Claude Code
+
+Spawned as an MCP server. Wire it into your `.mcp.json`:
 
 ```json
 {
@@ -40,68 +62,216 @@ Add this to your `.mcp.json`:
       "command": "chimera-memory",
       "args": ["serve"],
       "env": {
-        "TRANSCRIPT_JSONL_DIR": "~/.claude/projects/YOUR-PROJECT/"
+        "TRANSCRIPT_JSONL_DIR": "~/.claude/projects/YOUR-PROJECT/",
+        "OMP_NUM_THREADS": "12"
       }
     }
   }
 }
 ```
 
+`OMP_NUM_THREADS` caps the embedding model's CPU usage. Set it to roughly 75% of your cores BEFORE the server starts — ONNX won't respect the setting if applied later.
+
+Restart Claude Code and the tools appear as `mcp__chimera-memory__*`.
+
+### Codex CLI
+
+Same shape, different file. Codex reads `~/.codex/mcp_servers.json`:
+
+```json
+{
+  "mcpServers": {
+    "chimera-memory": {
+      "command": "chimera-memory",
+      "args": ["serve"],
+      "env": {
+        "TRANSCRIPT_JSONL_DIR": "~/.codex/sessions/",
+        "TRANSCRIPT_PERSONA": "your-persona"
+      }
+    }
+  }
+}
+```
+
+### Hermes Agent
+
+Hermes supports two integration modes simultaneously:
+
+1. **As an MCP server** (same as Claude Code / Codex). Lives in `<HERMES_HOME>/config.yaml` under `mcp_servers.chimera-memory`.
+2. **As a native memory provider** via plugin filesystem symlink at `<HERMES_HOME>/plugins/chimera_memory` plus `memory.provider: chimera_memory` in `config.yaml`. This is Hermes's first-class memory backend — used during agent turns for live recall, replacing or supplementing Honcho.
+
+The plugin path uses a filesystem **symlink** to the source repo, so source edits flow through. Different mechanism from Claude Code's pip-install pattern (Hermes scans a directory, Claude Code spawns a CLI), same outcome.
+
+### Via PersonifyAgents Installer (Automated)
+
+PA bundles three handlers that wire Chimera Memory into any of the three runtimes deterministically:
+
+```bash
+# Wire CM as a Hermes memory provider (plugin symlink + config.yaml mutation)
+personifyagents install apply \
+  --runtime hermes \
+  --feature chimera_memory.hermes_provider \
+  --hermes-home /path/to/hermes-home \
+  --chimera-memory-repo /path/to/ChimeraMemory \
+  --mode symlink \
+  --yes
+
+# Wire CM as an MCP server in any runtime's config
+personifyagents install apply \
+  --runtime claude_code \
+  --feature chimera_memory.mcp_server \
+  --runtime-home /path/to/claude-project \
+  --yes
+
+# Install a transcript backfill helper script (calls chimera-memory backfill on schedule)
+personifyagents install apply \
+  --runtime hermes \
+  --feature chimera_memory.transcript_backfill_helper \
+  --persona <persona-name> \
+  --yes
+```
+
+Each PA apply writes a backup, a receipt, and updates the install-state ledger ... fully audited and reversible. PA assumes `chimera-memory` is already on PATH (it doesn't pip-install the binary itself; that's a separate concern).
+
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                   Your Machine                       │
-│                                                      │
-│  Claude Code ──writes──► JSONL Session Files          │
-│                               │                      │
-│                          ┌────▼────┐                 │
-│                          │  File   │  watchdog +     │
-│                          │ Watcher │  poll safety    │
-│                          └────┬────┘                 │
-│                               │ tail-read            │
-│                          ┌────▼────┐                 │
-│                          │ Parser  │  content        │
-│                          │         │  extraction     │
-│                          └────┬────┘                 │
-│                               │ sanitize             │
-│                          ┌────▼────┐                 │
-│                          │ SQLite  │  WAL mode       │
-│                          │   DB    │  FTS5 search    │
-│                          └────┬────┘                 │
-│                               │                      │
-│              ┌────────────────┼────────────┐         │
-│              │                │            │         │
-│         MCP Tools          CLI         (Future)      │
-│       discord_recall    search         GUI / API     │
-│       transcript_stats  stats                        │
-│       backfill          backfill                     │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                      Your Machine                            │
+│                                                              │
+│  Agent harness  ──writes──►  JSONL Session Files             │
+│                                 │                            │
+│  Your Memory   ──writes──►  Markdown + YAML files            │
+│                                 │                            │
+│                         ┌───────▼────────┐                   │
+│                         │   Indexer      │  watchdog +       │
+│                         │                │  poll safety      │
+│                         └───────┬────────┘                   │
+│                                 │                            │
+│                         ┌───────▼────────┐                   │
+│                         │   Sanitizer    │  secret +         │
+│                         │                │  injection scan   │
+│                         └───────┬────────┘                   │
+│                                 │                            │
+│                         ┌───────▼────────┐                   │
+│                         │  SQLite + FTS5 │  WAL mode         │
+│                         │  + embeddings  │  bge-small-en     │
+│                         └───────┬────────┘                   │
+│                                 │                            │
+│                         ┌───────▼────────┐                   │
+│                         │ Cognitive Layer│  decay, surprise, │
+│                         │                │  zones, gaps      │
+│                         └───────┬────────┘                   │
+│                                 │                            │
+│                  ┌──────────────┴──────────────┐             │
+│                  │                             │             │
+│             MCP Server                         CLI           │
+│           (20 tools)                       (setup + query)   │
+└─────────────────────────────────────────────────────────────┘
 ```
+
+## The 20 MCP Tools
+
+### Transcript Layer (everything the harness wrote)
+
+| Tool | What it does |
+|------|-------------|
+| `discord_recall_index` | Compact search index (~100 tokens/result). **Use this first.** Returns ID, timestamp, author, 80-char preview. |
+| `discord_detail` | Fetch full content for specific entry IDs from the index. Used after `discord_recall_index`. |
+| `discord_recall` | Direct full-content search. Heavier than the index flow. Use when you need everything at once. |
+| `semantic_search` | Hybrid FTS5 + vector search via Reciprocal Rank Fusion. Finds "car" when you search "vehicle." |
+| `session_list` | Browse sessions with dates, durations, dispositions, persona filters. |
+| `transcript_stats` | Entry count, session count, DB size, last entry timestamp, breakdowns by type and source. |
+| `transcript_backfill` | Index all historical JSONL files. Safe to re-run (skips unchanged via MD5). |
+| `embed_transcripts` | Generate embeddings for entries that don't have them. Required for semantic search. |
+
+**Recommended recall workflow** (3-10x token savings vs direct recall):
+1. `discord_recall_index(search="topic")` — scan previews
+2. Pick relevant IDs
+3. `discord_detail(ids=[...])` — get full content only for those
+
+### Curated Memory Layer (markdown files you write)
+
+| Tool | What it does |
+|------|-------------|
+| `memory_stats` | Corpus overview. File counts by type, status, persona. Zero-token session start check. |
+| `memory_search` | FTS5 full-text search across your memory files. |
+| `memory_recall` | Semantic similarity search via embeddings. Use for fuzzy/conceptual queries. |
+| `memory_query` | Structured filter by type, importance, status, tags, about field. |
+| `memory_guard` | Scan text for credentials, injection patterns, invisible unicode before persisting. |
+| `memory_gaps` | Graph analysis. Finds disconnected memory clusters and isolated files. |
+| `memory_reindex` | Force re-scan after bulk file changes. |
+| `memory_mark_failure` | Flag a memory that led to wrong advice. Penalizes its zone score. |
+| `memory_consolidation_report` | Dry-run analysis: what would be decayed, staled, or archived. |
+
+### Cognitive Analytics
+
+| Tool | What it does |
+|------|-------------|
+| `memory_zones` | Assigns every memory to CORE/ACTIVE/PASSIVE/ARCHIVE tier based on importance, frequency, recency, and failures. Drives "what loads automatically." |
+| `memory_decay_report` | Per-type exponential decay rates. Procedural decays slowest (load-bearing), opinions fastest. |
+| `memory_surprise` | Novelty scoring via nearest-neighbor embedding distance. High surprise = unique. Low = redundant. |
+
+## Memory File Format
+
+Markdown + YAML frontmatter:
+
+```markdown
+---
+type: procedural        # episodic | semantic | procedural | entity | reflection | social
+importance: 8           # 1-10
+created: 2026-04-06
+last_accessed: 2026-04-06
+access_count: 0
+tags: [topic, topic]
+status: active
+---
+
+Natural language content. How you'd actually think about it.
+```
+
+The frontmatter drives everything — importance feeds zone scoring, access_count tracks reinforcement, tags enable graph analysis, failure_count penalizes bad knowledge.
+
+## Zone-Based Loading
+
+```
+CORE     (≥0.70)   load automatically on session start
+ACTIVE   (≥0.55)   load when tags match current task
+PASSIVE  (≥0.30)   loaded only on direct query
+ARCHIVE  (<0.30)   never auto-loaded, still queryable
+```
+
+**Scoring formula:**
+```
+score = confidence·0.25 + frequency·0.20 + recency·0.15
+      + context_match·0.20 + spec_alignment·0.15
+      - failure_penalty·0.25
+```
+
+Access reinforcement happens automatically on every `memory_search` or `memory_recall` hit. Frequency grows naturally through use. Failure marks (`memory_mark_failure`) penalize bad memories so they fall down the zones over time.
 
 ## How It Works
 
 ### JSONL Parsing
 
-Claude Code stores every session as a JSONL file — one JSON object per line. Each object contains user messages, assistant responses, tool calls, Discord messages, system events, and more.
-
-The parser extracts and classifies each entry:
+Each agent harness stores sessions as JSONL — one JSON object per line. Each object is a user message, assistant response, tool call, system event, attachment, or platform-specific event (e.g. Discord). The parser classifies each entry:
 
 | Entry Type | What It Captures | Indexed Content |
 |-----------|-----------------|-----------------|
 | `discord_inbound` | Messages received from Discord | Full message text |
 | `discord_outbound` | Messages sent to Discord | Full message text |
 | `user_message` | CLI user input | Full text |
-| `assistant_message` | Claude's responses | Full text (no thinking blocks) |
-| `tool_call` | Tool invocations (Read, Bash, etc.) | Metadata only (tool name, input keys) |
-| `tool_result` | Tool output | Metadata only (tool name, success/fail, size) |
+| `assistant_message` | Agent responses | Full text (no thinking blocks) |
+| `tool_call` | Tool invocations (Read, Bash, etc.) | Metadata only |
+| `tool_result` | Tool output | Metadata only |
 | `system` | System events, notifications | Metadata only |
+| `attachment` | File attachments | Path and metadata |
 
-**Design choice:** Conversation content gets full-text indexed. Tool I/O gets metadata only. This keeps the database lean and search results relevant — you won't get 50 `tool_result` hits when you search for "umbrella."
+**Design choice:** Conversation content gets full-text indexed and embedded. Tool I/O gets metadata only. This keeps the DB lean and search results relevant — you won't get 50 `tool_result` hits when you search for "umbrella."
 
 ### Content Sanitization
 
-Before any content hits the database, it passes through a sanitizer that detects and redacts:
+Every entry passes through a sanitizer that detects and redacts:
 
 - API keys (`sk-ant-*`, `sk-*`, `ghp_*`, AWS keys)
 - Bot tokens (Discord, Slack)
@@ -109,211 +279,183 @@ Before any content hits the database, it passes through a sanitizer that detects
 - Bearer tokens
 - Passwords and secrets in env-var format
 - Private keys
+- Invisible unicode (injection vector)
 
-Redacted content is replaced with `<REDACTED:type>` markers. The original content never touches disk.
+Redacted content is replaced with `<REDACTED:type>` markers. The original never touches disk.
 
-### Search
+### Embeddings
 
-Two search modes in one tool:
+Semantic search uses `bge-small-en-v1.5` via [fastembed](https://github.com/qdrant/fastembed) — a 23MB ONNX model that runs locally, no API calls. First run downloads the model (~80MB including runtime). Subsequent runs are offline.
 
-**Chronological** — "Show me the last 50 messages"
-```
-discord_recall(limit=50)
-discord_recall(channel="123456", direction="inbound", limit=20)
-discord_recall(after="2026-04-01", before="2026-04-05")
-```
+Embeddings are only generated for conversation content (user messages, assistant messages, Discord messages). Tool results and system entries are skipped — they'd just add noise.
 
-**Full-text search** — "Find conversations about X"
-```
-discord_recall(search="umbrella")
-discord_recall(search="Japan hotel", channel="123456")
-```
+### Hybrid Search (semantic_search)
 
-Full-text search uses SQLite FTS5 with Porter stemming — searching "research" also finds "researching," "researched," and "researcher."
+`semantic_search` combines FTS5 keyword matching with vector similarity via Reciprocal Rank Fusion. Results are re-ranked by recency, session affinity, and content richness. Finds both exact matches and semantically similar content.
 
-### Import Log
+If embeddings aren't built yet, it falls back to keyword-only search automatically.
+
+### Import Log (Incremental Indexing)
 
 Every JSONL file is tracked with an MD5 hash. On restart or re-run:
 - **Unchanged files** are skipped instantly
-- **Modified files** (grew since last read) are re-indexed
+- **Modified files** (grew since last read) are re-indexed from the last position
 - **New files** are indexed from scratch
 
-First backfill of 31 sessions (55MB of JSONL): **1.6 seconds.** Re-run: **0.2 seconds.**
+First backfill of 31 sessions (55MB JSONL): **~2 seconds.** Re-run: **~0.3 seconds.**
 
 ### Concurrency
 
 - **WAL mode** — readers never block writers, writers never block readers
-- **Retry with backoff** — automatic retry on `SQLITE_BUSY` (3 attempts, exponential delay)
-- **Tail-read pattern** — reads JSONL files that Claude Code is actively writing to, without locking or conflicts
+- **Retry with backoff** — automatic retry on `SQLITE_BUSY`
+- **Tail-read pattern** — reads JSONL files the harness is actively writing to, without locking
 
 ## Performance
 
-Tested against a real 31-session corpus:
+Tested on a real 31-session corpus:
 
 | Metric | Result |
 |--------|--------|
-| Backfill (31 files, 55MB) | 1.6s |
-| Re-backfill (skip unchanged) | 0.2s |
-| Entries indexed | 18,900+ |
-| DB size | 19 MB |
-| Chronological query | 7ms |
-| FTS5 search | <10ms |
-| Batch insert (5,000 entries) | 0.37s |
+| Backfill (31 files, 55MB) | ~2s |
+| Re-backfill (skip unchanged) | ~0.3s |
+| Entries indexed | 19,500+ |
+| Embeddings (5,600 entries) | ~4 min first time, then incremental |
+| DB size | ~32 MB (with embeddings) |
+| Chronological query | <10ms |
+| FTS5 search | <15ms |
+| Semantic search (hybrid) | ~50ms |
 | DB integrity | ✓ |
 
-SQLite handles databases up to 281 TB. At projected 12-month scale (~700K entries, ~3GB), indexed queries remain under 1ms.
+SQLite handles databases up to 281 TB. At projected 12-month scale (~700K entries, ~3GB raw), indexed queries remain under 1ms.
 
-## MCP Tools
-
-### Recall & Search
-
-#### `discord_recall`
-Full conversation recall with filters. Returns complete message content.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `channel` | string | — | Filter by Discord chat_id |
-| `limit` | int | 50 | Max messages to return |
-| `search` | string | — | Full-text search query |
-| `after` | string | — | Messages after this ISO timestamp |
-| `before` | string | — | Messages before this ISO timestamp |
-| `direction` | string | — | `"inbound"` or `"outbound"` |
-| `author` | string | — | Filter by author username |
-
-#### `discord_recall_index`
-**Token-efficient search.** Returns compact index (~100 tokens/result) with ID, timestamp, author, and 80-char preview. Use this first, then call `discord_detail` for entries you care about. Same parameters as `discord_recall`.
-
-#### `discord_detail`
-Fetch full content for specific entries by ID. Use after `discord_recall_index`.
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `ids` | list[int] | Entry IDs from the index results |
-
-**Recommended workflow:**
-1. `discord_recall_index(search="topic")` — scan previews (~100 tokens each)
-2. Pick the IDs that look relevant
-3. `discord_detail(ids=[...])` — get full content only for those
-
-This saves 3-10x tokens compared to fetching everything at once.
-
-### Sessions
-
-#### `session_list`
-Browse sessions with summaries, dispositions, and date ranges.
-
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `limit` | int | 20 | Max sessions to return |
-| `after` | string | — | Sessions started after this timestamp |
-| `before` | string | — | Sessions started before this timestamp |
-| `persona` | string | — | Filter by persona name |
-| `disposition` | string | — | `"COMPLETED"`, `"IN_PROGRESS"`, or `"INTERRUPTED"` |
-
-### Database
-
-#### `transcript_stats`
-Database health check: entry count, session count, DB size, last entry timestamp, breakdowns by entry type, source, and session disposition.
-
-#### `transcript_backfill`
-Index all historical JSONL files. Safe to run multiple times — skips unchanged files automatically.
-
-## CLI
+## CLI Reference
 
 ```bash
 chimera-memory serve              # Run MCP server (stdio)
 chimera-memory backfill           # Index all historical sessions
-chimera-memory backfill --persona sarah --jsonl-dir /path/to/sessions/
+chimera-memory backfill --jsonl-dir <DIR> --persona <NAME> --client claude|codex
 chimera-memory stats              # Show database statistics
+chimera-memory split-db           # Split a shared transcript DB into per-persona DBs
 ```
+
+`backfill` accepts `--client claude|codex` to use the right parser for the JSONL flavor (Claude Code and Codex CLI write structurally different JSONL).
+
+`split-db` is for splitting a multi-persona DB after the fact, useful if you started with one shared DB and want per-persona isolation.
 
 ## Configuration
 
-A config file is auto-generated on first run at `~/.chimera-memory/config.yaml`. Every option is commented out with plain-English explanations. Uncomment what you want to change.
+A config file is auto-generated on first run at `~/.chimera-memory/config.yaml`. Every option is commented with plain-English explanations.
 
-Priority order: **environment variables > config file > defaults**.
+Priority: **environment variables > config file > defaults**.
 
-| Setting | Config Key | Env Variable | Default |
-|---------|-----------|--------------|---------|
-| Database path | — | `TRANSCRIPT_DB_PATH` | `~/.chimera-memory/transcript.db` |
-| JSONL directory | `jsonl_dir` | `TRANSCRIPT_JSONL_DIR` | Auto-detected from CWD |
-| Persona name | `persona` | `TRANSCRIPT_PERSONA` | — |
-| Retention (days) | `retention_days` | `TRANSCRIPT_RETENTION_DAYS` | 90 |
-| Max DB size (MB) | `max_db_size_mb` | `TRANSCRIPT_MAX_DB_SIZE_MB` | 1024 |
-| Index tool calls | `index_tool_calls` | `TRANSCRIPT_INDEX_TOOL_CALLS` | true |
-| Index tool results | `index_tool_results` | `TRANSCRIPT_INDEX_TOOL_RESULTS` | false |
-| Progressive disclosure | `progressive_disclosure` | `TRANSCRIPT_PROGRESSIVE_DISCLOSURE` | true |
-| Branch detection | `branch_detection` | `TRANSCRIPT_BRANCH_DETECTION` | false |
+| Setting | Env Variable | Default |
+|---------|--------------|---------|
+| Database path | `TRANSCRIPT_DB_PATH` | `~/.chimera-memory/transcript.db` |
+| JSONL directory | `TRANSCRIPT_JSONL_DIR` | Auto-detected from CWD |
+| Memory root | `MEMORY_ROOT` | Auto-detected |
+| Persona name | `TRANSCRIPT_PERSONA` | — |
+| Client/parser | `TRANSCRIPT_CLIENT` | `claude` |
+| Retention (days) | `TRANSCRIPT_RETENTION_DAYS` | 90 |
+| Max DB size (MB) | `TRANSCRIPT_MAX_DB_SIZE_MB` | 1024 |
+| OMP thread cap | `OMP_NUM_THREADS` | System default |
 
 ## Database Schema
 
 ```sql
--- One row per session file
+-- Session metadata
 sessions (session_id, persona, title, git_branch, cwd,
           started_at, ended_at, exchange_count, disposition)
 
--- Every indexed entry
+-- Transcript entries (full-text indexed)
 transcript (session_id, entry_type, timestamp, content, persona,
-            source, channel, chat_id, message_id, author, author_id,
-            tool_name, conversation_id, source_refs, metadata)
+            source, channel, chat_id, message_id, author, ...)
 
--- File tracking for incremental indexing
-import_log (file_path, file_hash, file_size, last_position,
-            entries_imported)
+-- Transcript embeddings (separate table to keep base schema lean)
+transcript_embeddings (transcript_id, embedding_blob, model)
 
--- Full-text search (FTS5, Porter stemming, external content)
+-- Curated memory files
+memory_files (id, path, relative_path, persona, fm_type, fm_importance,
+              fm_status, fm_tags, fm_last_accessed, fm_access_count,
+              fm_failure_count, ...)
+
+-- Memory embeddings
+memory_embeddings (file_id, embedding_blob, model)
+
+-- Incremental indexing
+import_log (file_path, file_hash, file_size, last_position, entries_imported)
+
+-- Full-text search
 transcript_fts (content)
+memory_fts (content)
 ```
 
 ## Roadmap
 
 ### Phase 1 ✅ — Foundation
-- [x] JSONL parser with content extraction and entry type classification
-- [x] SQLite schema with sessions, transcript, import_log tables
+- [x] JSONL parser with content extraction and entry classification
+- [x] SQLite schema (sessions, transcript, import_log)
 - [x] FTS5 full-text search with Porter stemming
-- [x] Content sanitization (secret/token redaction)
-- [x] Import log with MD5 file hashes (skip unchanged files)
-- [x] WAL mode + retry with exponential backoff
-- [x] File watcher (watchdog + periodic poll safety net)
-- [x] Background backfill with progress reporting
-- [x] MCP tools: `discord_recall`, `transcript_stats`, `transcript_backfill`
-- [x] CLI: `serve`, `backfill`, `stats`
+- [x] Content sanitization (secret/token redaction, injection detection)
+- [x] Incremental indexing with MD5 hashes
+- [x] WAL mode + retry with backoff
+- [x] File watcher (watchdog + poll safety net)
+- [x] MCP tools: recall, stats, backfill
+- [x] CLI: serve, backfill, stats
 
 ### Phase 2 ✅ — Search & Session Intelligence
-- [x] Progressive disclosure (`discord_recall_index` + `discord_detail`, 3-10x token savings)
-- [x] Precomputed session summaries (deterministic, zero LLM, greeting/command filtering)
-- [x] Session browser (`session_list` MCP tool with date/persona/disposition filters)
-- [x] Retention consolidation (compress old entries to permanent summaries, prune raw transcripts)
-- [x] Auto-generated config file (`~/.chimera-memory/config.yaml` with commented defaults)
-- [ ] Conversation branch detection (handle Claude Code rewinds)
-- [ ] Export (markdown / JSON / CSV with filters)
-- [ ] Event hooks (emitter pattern for "new entry indexed" triggers)
+- [x] Progressive disclosure (`discord_recall_index` + `discord_detail`)
+- [x] Session browser (`session_list`)
+- [x] Retention consolidation
+- [x] Auto-generated config file
+- [x] Precomputed session summaries (zero LLM, deterministic)
 
-### Phase 3 — Semantic Layer
-- [ ] Local embeddings (all-MiniLM-L6-v2 ONNX, no API calls)
-- [ ] Hybrid search (BM25 + vector via Reciprocal Rank Fusion)
-- [ ] Multi-signal re-ranking (recency, project affinity, graph proximity)
-- [ ] Per-prompt semantic injection (automatic RAG on every message)
-- [ ] Pluggable parsers (support non-Claude-Code session formats)
+### Phase 3 ✅ — Semantic Layer
+- [x] Local embeddings (bge-small-en-v1.5 via fastembed, ~80MB, offline)
+- [x] Hybrid search (FTS5 + vector via Reciprocal Rank Fusion)
+- [x] Multi-signal re-ranking (recency, session affinity, content richness)
+- [x] Pluggable parser interface (BaseParser ABC)
 
-### Phase 4 — Cognitive Layer
-- [ ] Algorithmic memory decay (per-type exponential salience)
-- [ ] Surprise scoring (novelty detection without LLM calls)
-- [ ] Zone-based memory loading (core / active / passive / archive)
+### Phase 4 ✅ — Cognitive Layer
+- [x] Curated memory layer (markdown + YAML frontmatter, separate from transcripts)
+- [x] Algorithmic memory decay (per-type exponential salience)
+- [x] Surprise scoring (novelty via nearest-neighbor embeddings, no LLM)
+- [x] Zone-based loading (CORE / ACTIVE / PASSIVE / ARCHIVE)
+- [x] Access reinforcement (auto-boost on search/recall hits)
+- [x] Failure marking (penalize memories that led to wrong advice)
+- [x] Graph analysis (disconnected clusters, isolated files)
+- [x] Memory guard (pre-write credential + injection scan)
+
+### Phase 5 ✅ — Cross-Runtime
+- [x] Codex CLI parser (separate from Claude Code parser)
+- [x] Hermes Agent integration (memory provider plugin + MCP server)
+- [x] PersonifyAgents installer handlers (deterministic per-runtime wiring)
+- [x] `split-db` CLI for per-persona DB isolation
+
+### Phase 6 — Future
 - [ ] Claim extraction + contradiction detection
+- [ ] Runtime context-aware zone scoring (currently uses neutral baseline)
 - [ ] Encryption at rest
+- [ ] Export (markdown / JSON / CSV)
+- [ ] Conversation branch detection (harness rewinds)
 
 ## Compatibility
 
 - **Python:** 3.10+
 - **SQLite:** 3.35+ (ships with Python)
-- **OS:** Windows, macOS, Linux
-- **Claude Code:** Any version that writes JSONL session files
-- **Dependencies:** `watchdog` (required), `mcp` (optional, for MCP server)
+- **OS:** Windows, macOS, Linux, WSL
+- **Harnesses:** Claude Code, Codex CLI, Hermes Agent (any version writing JSONL session files)
+- **Dependencies:** `fastembed`, `watchdog`, `mcp`, `networkx` (for graph analysis), `pyyaml`
 
-## Viewing in Obsidian
+## Using Without the Curated Memory Layer
 
-If you use Obsidian, you can browse your persona's memory files by pointing a vault at the memory directory. The markdown + YAML frontmatter format is natively compatible with Obsidian's graph view, backlinks, and Dataview queries. No configuration required.
+If you only want transcript search (no curated memory files), just skip the memory tools. The transcript layer works independently — no setup required beyond `backfill`. The curated memory layer is opt-in.
+
+Set `MEMORY_ROOT=/dev/null` (or simply leave it unset) to tell the indexer there's no memory directory to watch.
+
+## Related
+
+- [PersonifyAgents](https://github.com/nexu-io/personifyagents) — Person-shaped agent platform built on top of ChimeraMemory. Uses the curated memory layer heavily. Provides the deterministic installer handlers that wire CM into any runtime.
+- [ChimeraPersonas](https://github.com/ChimeraWerks/ChimeraPersonas) — Earlier opinionated persona system using ChimeraMemory's curated layer. PA is the successor.
 
 ## License
 

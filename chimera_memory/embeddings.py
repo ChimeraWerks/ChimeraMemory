@@ -16,10 +16,30 @@ EMBEDDING_DIM = 384
 _model = None
 
 
+def _get_cache_dir():
+    """Persistent cache directory for the ONNX embedding model.
+
+    Default: ~/.chimera-memory/cache/. Override with CHIMERA_MEMORY_CACHE_DIR.
+    MUST NOT live in %TEMP% — Windows auto-cleans Temp periodically and that
+    wipes the cached ONNX model, causing NoSuchFile crashes on next server
+    startup (Day 25 root-cause fix, 2026-04-16).
+    """
+    import os
+    from pathlib import Path
+    override = os.environ.get("CHIMERA_MEMORY_CACHE_DIR")
+    if override:
+        cache_dir = Path(override)
+    else:
+        cache_dir = Path.home() / ".chimera-memory" / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return str(cache_dir)
+
+
 def _get_model():
     """Lazy-load the embedding model (23MB ONNX, cached after first download).
 
     Caps ONNX threads to 75% of available cores to avoid pegging the CPU.
+    Cache path is explicitly persistent (see _get_cache_dir).
     """
     global _model
     if _model is None:
@@ -33,11 +53,12 @@ def _get_model():
         os.environ.setdefault("ORT_INTRA_OP_NUM_THREADS", str(max_threads))
         os.environ.setdefault("ORT_INTER_OP_NUM_THREADS", str(max(1, max_threads // 2)))
 
+        cache_dir = _get_cache_dir()
         from fastembed import TextEmbedding
-        _model = TextEmbedding(MODEL_NAME, threads=max_threads)
+        _model = TextEmbedding(MODEL_NAME, threads=max_threads, cache_dir=cache_dir)
         log.info(
-            "Loaded embedding model: %s (%d dims, %d/%d threads)",
-            MODEL_NAME, EMBEDDING_DIM, max_threads, cpu_count,
+            "Loaded embedding model: %s (%d dims, %d/%d threads, cache=%s)",
+            MODEL_NAME, EMBEDDING_DIM, max_threads, cpu_count, cache_dir,
         )
     return _model
 

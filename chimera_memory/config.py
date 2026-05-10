@@ -59,9 +59,12 @@ DEFAULT_CONFIG_TEMPLATE = """\
 # agents share one database.
 # persona:
 
+# Client transcript format. Supported values include claude and codex.
+# client:
+
 # ─── Session Files ───────────────────
 
-# Where Claude Code stores session files.
+# Where the client stores session files.
 # Auto-detected from your working directory if not set.
 # jsonl_dir:
 
@@ -81,6 +84,7 @@ DEFAULTS = {
     "index_system": False,
     "progressive_disclosure": True,
     "persona": None,
+    "client": None,
     "jsonl_dir": None,
     "branch_detection": False,
 }
@@ -117,6 +121,7 @@ def load_config() -> dict[str, Any]:
         "TRANSCRIPT_INDEX_SYSTEM": "index_system",
         "TRANSCRIPT_PROGRESSIVE_DISCLOSURE": "progressive_disclosure",
         "TRANSCRIPT_PERSONA": "persona",
+        "CHIMERA_CLIENT": "client",
         "TRANSCRIPT_JSONL_DIR": "jsonl_dir",
         "TRANSCRIPT_BRANCH_DETECTION": "branch_detection",
     }

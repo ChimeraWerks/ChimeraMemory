@@ -127,16 +127,32 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
 # ─── File Discovery ─────────────────────────────────────────────────
 
 def discover_files(personas_dir: Path) -> list[tuple[str, str, Path]]:
-    """Discover all indexable markdown files. Returns [(persona, relative_path, full_path)]."""
+    """Discover indexable markdown files for the current persona only.
+
+    When TRANSCRIPT_PERSONA env var is set, only files belonging to that persona
+    (plus shared/) are indexed. This enforces per-persona privacy: each persona
+    sees its own memory + shared content, never another persona's files.
+
+    When TRANSCRIPT_PERSONA is unset, walks all personas (legacy / multi-persona
+    aggregation use case). The MCP-server-per-persona deployment should always
+    set the env var.
+
+    Returns [(persona, relative_path, full_path)].
+    """
+    import os
     results = []
     if not personas_dir.exists():
         return results
+
+    scope_persona = os.environ.get("TRANSCRIPT_PERSONA", "").strip()
 
     for persona_dir in personas_dir.iterdir():
         if not persona_dir.is_dir() or persona_dir.name.startswith("."):
             continue
         for sub in persona_dir.iterdir():
             if not sub.is_dir() or sub.name.startswith("."):
+                continue
+            if scope_persona and sub.name != scope_persona:
                 continue
             _walk_for_files(sub, sub.name, sub, results)
 
@@ -145,6 +161,55 @@ def discover_files(personas_dir: Path) -> list[tuple[str, str, Path]]:
         _walk_for_files(shared_dir, "shared", shared_dir, results)
 
     return results
+
+
+def cleanup_other_personas(conn, scope_persona: str) -> dict:
+    """Delete memory rows belonging to other personas.
+
+    Used to enforce the privacy boundary on existing data when TRANSCRIPT_PERSONA
+    scope changes. Removes from memory_files, memory_embeddings, memory_fts.
+    The 'shared' persona is preserved.
+
+    Returns {'memory_files': N, 'memory_embeddings': N, 'memory_fts': N} counts.
+    """
+    if not scope_persona:
+        return {"error": "scope_persona required"}
+
+    cur = conn.cursor()
+    counts = {}
+
+    # Find file IDs to delete (everything except scope_persona and shared)
+    cur.execute(
+        "SELECT id FROM memory_files WHERE persona NOT IN (?, 'shared')",
+        (scope_persona,),
+    )
+    ids_to_delete = [row[0] for row in cur.fetchall()]
+
+    if not ids_to_delete:
+        return {"memory_files": 0, "memory_embeddings": 0, "memory_fts": 0}
+
+    placeholders = ",".join("?" * len(ids_to_delete))
+
+    cur.execute(
+        f"DELETE FROM memory_embeddings WHERE file_id IN ({placeholders})",
+        ids_to_delete,
+    )
+    counts["memory_embeddings"] = cur.rowcount
+
+    cur.execute(
+        f"DELETE FROM memory_fts WHERE rowid IN ({placeholders})",
+        ids_to_delete,
+    )
+    counts["memory_fts"] = cur.rowcount
+
+    cur.execute(
+        f"DELETE FROM memory_files WHERE id IN ({placeholders})",
+        ids_to_delete,
+    )
+    counts["memory_files"] = cur.rowcount
+
+    conn.commit()
+    return counts
 
 
 def _walk_for_files(directory: Path, persona: str, base: Path, results: list):
@@ -330,9 +395,11 @@ def embed_memory_files(conn: sqlite3.Connection, file_ids: list[int]):
 
 def memory_search(conn: sqlite3.Connection, query: str, persona: Optional[str] = None, limit: int = 20) -> list[dict]:
     """Full-text search across memory files."""
+    from .cognitive import reinforce_on_access
+
     if persona:
         rows = conn.execute("""
-            SELECT f.path, f.persona, f.relative_path, f.fm_type, f.fm_importance,
+            SELECT f.id, f.path, f.persona, f.relative_path, f.fm_type, f.fm_importance,
                    f.fm_status, snippet(memory_fts, 3, '>>>', '<<<', '...', 40) as snippet
             FROM memory_fts
             JOIN memory_files f ON f.id = memory_fts.rowid
@@ -341,7 +408,7 @@ def memory_search(conn: sqlite3.Connection, query: str, persona: Optional[str] =
         """, (query, persona, limit)).fetchall()
     else:
         rows = conn.execute("""
-            SELECT f.path, f.persona, f.relative_path, f.fm_type, f.fm_importance,
+            SELECT f.id, f.path, f.persona, f.relative_path, f.fm_type, f.fm_importance,
                    f.fm_status, snippet(memory_fts, 3, '>>>', '<<<', '...', 40) as snippet
             FROM memory_fts
             JOIN memory_files f ON f.id = memory_fts.rowid
@@ -349,9 +416,12 @@ def memory_search(conn: sqlite3.Connection, query: str, persona: Optional[str] =
             ORDER BY rank LIMIT ?
         """, (query, limit)).fetchall()
 
+    for r in rows:
+        reinforce_on_access(conn, r[0])
+
     return [
-        {"path": r[0], "persona": r[1], "relative_path": r[2], "type": r[3],
-         "importance": r[4], "status": r[5], "snippet": r[6]}
+        {"path": r[1], "persona": r[2], "relative_path": r[3], "type": r[4],
+         "importance": r[5], "status": r[6], "snippet": r[7]}
         for r in rows
     ]
 
@@ -439,10 +509,16 @@ def memory_recall(conn: sqlite3.Connection, concept: str, persona: Optional[str]
         scored.append((sim, r))
 
     scored.sort(key=lambda x: -x[0])
+    top = scored[:limit]
+
+    from .cognitive import reinforce_on_access
+    for _, r in top:
+        reinforce_on_access(conn, r[0])
+
     return [
         {"path": r[1], "persona": r[2], "relative_path": r[3], "type": r[4],
          "importance": r[5], "status": r[6], "about": r[7], "similarity": round(sim, 4)}
-        for sim, r in scored[:limit]
+        for sim, r in top
     ]
 
 
@@ -597,3 +673,156 @@ def mark_failure(conn: sqlite3.Connection, file_path: str) -> bool:
     conn.execute("UPDATE memory_files SET fm_failure_count = ? WHERE id = ?", (new_count, row[0]))
     conn.commit()
     return True
+
+
+# ─── Live File Watcher ──────────────────────────────────────────────
+
+def start_memory_watcher(db, personas_dir: Path):
+    """Watch persona memory dirs for .md changes and incrementally reindex.
+
+    Returns the watchdog Observer (caller can stop it) or None if watchdog
+    is unavailable. The watcher opens its own SQLite connections per event,
+    so it is safe to run alongside the cached memory_conn in the main thread.
+    """
+    try:
+        from watchdog.observers import Observer
+        from watchdog.events import FileSystemEventHandler
+    except ImportError:
+        log.warning("watchdog not installed, memory file watcher disabled")
+        return None
+
+    personas_dir = Path(personas_dir)
+    shared_dir = personas_dir.parent / "shared"
+
+    try:
+        personas_root = personas_dir.resolve()
+    except OSError:
+        personas_root = personas_dir
+    try:
+        shared_root = shared_dir.resolve()
+    except OSError:
+        shared_root = shared_dir
+
+    import os as _os
+    _scope_persona = _os.environ.get("TRANSCRIPT_PERSONA", "").strip()
+
+    def _resolve(path: Path) -> tuple[str, str] | None:
+        """Map an absolute path to (persona, relative_path) or None.
+
+        Respects TRANSCRIPT_PERSONA env var: returns None for files belonging
+        to other personas. Shared content is always allowed through.
+        """
+        if path.suffix not in INDEX_EXTENSIONS:
+            return None
+        try:
+            resolved = path.resolve()
+        except OSError:
+            resolved = path
+        if any(part in SKIP_DIRS for part in resolved.parts):
+            return None
+
+        # shared/** → persona="shared", rel relative to shared_root
+        try:
+            rel = resolved.relative_to(shared_root)
+            return ("shared", str(rel).replace("\\", "/"))
+        except ValueError:
+            pass
+
+        # personas/<persona>/<sub>/** → persona=<sub>, rel relative to <sub>
+        try:
+            rel_full = resolved.relative_to(personas_root)
+        except ValueError:
+            return None
+        parts = rel_full.parts
+        if len(parts) < 3:
+            return None
+        # Privacy boundary: skip files belonging to other personas
+        if _scope_persona and parts[1] != _scope_persona:
+            return None
+        sub_root = personas_root / parts[0] / parts[1]
+        try:
+            rel = resolved.relative_to(sub_root)
+        except ValueError:
+            return None
+        return (parts[1], str(rel).replace("\\", "/"))
+
+    def _upsert(path: Path):
+        resolved = _resolve(path)
+        if not resolved:
+            return
+        persona, rel = resolved
+        try:
+            with db.connection() as conn:
+                init_memory_tables(conn)
+                changed = index_file(conn, persona, rel, path, maintenance=True)
+                if changed:
+                    row = conn.execute(
+                        "SELECT id FROM memory_files WHERE path = ?",
+                        (str(path).replace("\\", "/"),),
+                    ).fetchone()
+                    if row:
+                        try:
+                            embed_memory_files(conn, [row[0]])
+                        except Exception:
+                            log.exception("Embedding failed for %s", path)
+                conn.commit()
+        except Exception:
+            log.exception("Error reindexing memory file %s", path)
+
+    def _delete(path: Path):
+        if path.suffix not in INDEX_EXTENSIONS:
+            return
+        path_str = str(path).replace("\\", "/")
+        try:
+            with db.connection() as conn:
+                init_memory_tables(conn)
+                row = conn.execute(
+                    "SELECT id FROM memory_files WHERE path = ?", (path_str,)
+                ).fetchone()
+                if not row:
+                    return
+                file_id = row[0]
+                conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (file_id,))
+                conn.execute("DELETE FROM memory_embeddings WHERE file_id = ?", (file_id,))
+                conn.execute("DELETE FROM memory_files WHERE id = ?", (file_id,))
+                conn.commit()
+        except Exception:
+            log.exception("Error removing memory file from index %s", path)
+
+    class _Handler(FileSystemEventHandler):
+        def on_modified(self, event):
+            if not event.is_directory:
+                _upsert(Path(event.src_path))
+
+        def on_created(self, event):
+            if not event.is_directory:
+                _upsert(Path(event.src_path))
+
+        def on_deleted(self, event):
+            if not event.is_directory:
+                _delete(Path(event.src_path))
+
+        def on_moved(self, event):
+            if event.is_directory:
+                return
+            _delete(Path(event.src_path))
+            _upsert(Path(event.dest_path))
+
+    observer = Observer()
+    handler = _Handler()
+    scheduled = []
+    if personas_dir.exists():
+        observer.schedule(handler, str(personas_dir), recursive=True)
+        scheduled.append(str(personas_dir))
+    if shared_dir.exists():
+        observer.schedule(handler, str(shared_dir), recursive=True)
+        scheduled.append(str(shared_dir))
+
+    if not scheduled:
+        log.warning("start_memory_watcher: no directories to watch")
+        return None
+
+    observer.daemon = True
+    observer.start()
+    log.info("Memory file watcher started on %s", ", ".join(scheduled))
+    return observer

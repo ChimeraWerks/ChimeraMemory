@@ -1,6 +1,7 @@
 """Test indexer: import log, backfill, tail-read, file watching."""
 
 import json
+import os
 import tempfile
 import shutil
 import time
@@ -161,6 +162,64 @@ def run():
     empty_indexer = Indexer(empty_db, empty_dir)
     empty_indexer.backfill()  # Should not crash
     test("Empty directory backfill", empty_db.stats()["entry_count"] == 0)
+
+    # Recursive Codex source root
+    codex_root = Path(tmpdir) / "codex_sessions"
+    codex_day = codex_root / "2026" / "05" / "02"
+    codex_day.mkdir(parents=True)
+    write_jsonl(codex_day, "rollout-codex.jsonl", [
+        {"timestamp": "2026-05-02T10:00:00Z", "type": "session_meta", "payload": {
+            "id": "codex-session-1",
+            "timestamp": "2026-05-02T10:00:00Z",
+            "cwd": "/repo/personas/developer/asa",
+            "git": {"branch": "main"},
+        }},
+        {"timestamp": "2026-05-02T10:00:01Z", "type": "event_msg", "payload": {
+            "type": "user_message",
+            "message": "Codex recursive marker",
+            "images": [],
+            "local_images": [],
+            "text_elements": [],
+        }},
+        {"timestamp": "2026-05-02T10:00:02Z", "type": "event_msg", "payload": {
+            "type": "agent_message",
+            "phase": "final",
+            "message": "Codex response marker",
+        }},
+    ])
+    write_jsonl(codex_day, "rollout-other-persona.jsonl", [
+        {"timestamp": "2026-05-02T10:00:00Z", "type": "session_meta", "payload": {
+            "id": "codex-session-other",
+            "timestamp": "2026-05-02T10:00:00Z",
+            "cwd": "/repo/personas/researcher/sarah",
+            "git": {"branch": "main"},
+        }},
+        {"timestamp": "2026-05-02T10:00:01Z", "type": "event_msg", "payload": {
+            "type": "user_message",
+            "message": "Other persona Codex marker",
+            "images": [],
+            "local_images": [],
+            "text_elements": [],
+        }},
+    ])
+    codex_db = TranscriptDB(Path(tmpdir) / "codex.db")
+    old_persona_root = os.environ.get("CHIMERA_PERSONA_ROOT")
+    os.environ["CHIMERA_PERSONA_ROOT"] = "/repo/personas/developer/asa"
+    try:
+        codex_indexer = Indexer(codex_db, codex_root, persona="asa", parser_format="codex")
+        codex_indexer.backfill()
+    finally:
+        if old_persona_root is None:
+            os.environ.pop("CHIMERA_PERSONA_ROOT", None)
+        else:
+            os.environ["CHIMERA_PERSONA_ROOT"] = old_persona_root
+    codex_results = discord_recall(codex_db, search="Codex", limit=10)
+    test("Codex recursive backfill", len(codex_results) >= 2 and codex_db.stats()["session_count"] == 1)
+    other_results = discord_recall(codex_db, search="Other persona", limit=10)
+    test("Codex persona root filter", len(other_results) == 0)
+    with codex_db.connection() as conn:
+        codex_persona_entries = conn.execute("SELECT COUNT(*) FROM transcript WHERE persona = 'asa'").fetchone()[0]
+    test("Codex persona tagged", codex_persona_entries >= 2)
 
     # File with only skip-type entries
     write_jsonl(jsonl_dir, "session-skiponly.jsonl", [
