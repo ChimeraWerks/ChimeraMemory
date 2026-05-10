@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Post-commit reminder: nudge to sync PA's vendored copy of ChimeraMemory.
+#
+# Non-blocking. Commits always succeed. This hook only prints a banner when
+# ../PersonifyAgents/ is detected next to this repo.
+#
+# Enable per clone: git config core.hooksPath .githooks
+
+CM_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -z "$CM_ROOT" ]; then
+    exit 0
+fi
+
+PA_CANDIDATE="$(cd "$CM_ROOT/.." 2>/dev/null && cd PersonifyAgents 2>/dev/null && pwd)"
+if [ -z "$PA_CANDIDATE" ] || [ ! -d "$PA_CANDIDATE" ]; then
+    exit 0
+fi
+
+if [ ! -d "$PA_CANDIDATE/vendor/chimera-memory" ]; then
+    exit 0
+fi
+
+NEW_SHA="$(git rev-parse --short HEAD 2>/dev/null)"
+
+echo ""
+echo "  [reminder] PA vendors a copy of this repo at:"
+echo "    $PA_CANDIDATE/vendor/chimera-memory/"
+echo ""
+echo "  CM is now at $NEW_SHA. Update PA's vendor copy to keep them in sync:"
+echo "    cd \"$PA_CANDIDATE\""
+echo "    python scripts/sync-chimera-memory.py"
+echo "    git add vendor/chimera-memory && git commit -m \"vendor: sync CM $NEW_SHA\""
+echo ""
+echo "  PA's CI runs --check on every push and will fail if vendor drifts."
+echo ""
