@@ -75,6 +75,10 @@ def main():
     sub_enhance_dry_run.add_argument("--persona", help="Only process jobs for this persona")
     sub_enhance_dry_run.add_argument("--limit", type=int, default=10, help="Maximum jobs to process")
     sub_enhance_dry_run.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    sub_enhance_sidecar = enhance_subparsers.add_parser("serve-dry-run", help="Run a deterministic local enhancement sidecar")
+    sub_enhance_sidecar.add_argument("--host", default="127.0.0.1", help="Bind host")
+    sub_enhance_sidecar.add_argument("--port", type=int, default=8944, help="Bind port")
+    sub_enhance_sidecar.add_argument("--token-env", default="", help="Optional env var containing bearer token")
 
     args = parser.parse_args()
 
@@ -309,6 +313,21 @@ def _run_enhance(args):
             json_output=args.json,
             lines=[f"Processed enhancement jobs: {len(processed)}"],
         )
+        return
+
+    if args.enhance_command == "serve-dry-run":
+        import os
+
+        from .memory_enhancement_sidecar import run_dry_run_sidecar
+
+        bearer_token = ""
+        if args.token_env:
+            bearer_token = os.environ.get(args.token_env, "")
+            if not bearer_token:
+                print("Bearer token env var is not set", file=sys.stderr)
+                sys.exit(2)
+        print(f"Dry-run memory enhancement sidecar listening on http://{args.host}:{args.port}/enhance")
+        run_dry_run_sidecar(args.host, args.port, bearer_token=bearer_token)
         return
 
     print("Missing enhance command. Try: chimera-memory enhance provider-plan", file=sys.stderr)
