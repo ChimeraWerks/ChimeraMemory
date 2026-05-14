@@ -767,6 +767,56 @@ def create_server():
         return "\n".join(lines)
 
     @server.tool()
+    def memory_review_pending(persona: str | None = None, limit: int = 50) -> str:
+        """List memories that require human review before instructional use."""
+        _ensure_memory_indexed()
+        from .memory import memory_review_pending as _pending
+        results = _pending(_get_memory_conn(), persona=persona, limit=limit)
+        if not results:
+            return "No memories pending review."
+        lines = []
+        for row in results:
+            lines.append(
+                f"{row['relative_path']} ({row['persona']}) | "
+                f"{row['provenance_status']}/{row['review_status']} | "
+                f"instruction={row['can_use_as_instruction']} evidence={row['can_use_as_evidence']}"
+            )
+            if row.get("about"):
+                lines.append(f"  about: {row['about']}")
+        return "\n".join(lines)
+
+    @server.tool()
+    def memory_review_action(
+        file_path: str,
+        action: str,
+        reviewer: str = "user",
+        notes: str = "",
+    ) -> str:
+        """Apply a review action to one memory file."""
+        _ensure_memory_indexed()
+        from .memory import REVIEW_ACTIONS, memory_review_action as _review_action
+        try:
+            result = _review_action(
+                _get_memory_conn(),
+                file_path=file_path,
+                action=action,
+                reviewer=reviewer,
+                notes=notes,
+            )
+        except ValueError:
+            allowed = ", ".join(sorted(REVIEW_ACTIONS))
+            return f"Unsupported review action. Allowed actions: {allowed}"
+        if not result.get("ok"):
+            return f"Review action failed: {result.get('error', 'unknown error')}"
+        after = result["after"]
+        return (
+            f"Applied {result['action']} to {result['path']} "
+            f"({result['persona']}). review={after['review_status']} "
+            f"provenance={after['provenance_status']} "
+            f"instruction={after['can_use_as_instruction']}"
+        )
+
+    @server.tool()
     def memory_gaps(persona: str | None = None) -> str:
         """Detect knowledge gaps using graph analysis. Finds disconnected clusters and isolated files."""
         _ensure_memory_indexed()
