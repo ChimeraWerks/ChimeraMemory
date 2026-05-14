@@ -385,6 +385,7 @@ chimera-memory codex doctor       # Diagnose Codex MCP setup without printing en
 chimera-memory enhance provider-plan --json
 chimera-memory enhance enqueue --file <MEMORY_PATH>
 chimera-memory enhance dry-run --persona <NAME>
+chimera-memory enhance sidecar-run --endpoint http://127.0.0.1:8944/enhance
 chimera-memory enhance serve-dry-run --port 8944
 ```
 
@@ -398,7 +399,8 @@ caps with credential refs hidden. `enqueue` queues an indexed memory file for
 metadata enrichment. `dry-run` consumes queued jobs with deterministic local
 metadata and keeps generated output review-gated: evidence-only, pending review,
 not instruction-grade. `serve-dry-run` exposes the same deterministic behavior
-over CM's HTTP sidecar contract for local integration tests.
+over CM's HTTP sidecar contract for local integration tests. `sidecar-run`
+processes queued jobs through a sidecar endpoint.
 
 ## Configuration
 

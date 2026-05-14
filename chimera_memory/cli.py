@@ -75,6 +75,14 @@ def main():
     sub_enhance_dry_run.add_argument("--persona", help="Only process jobs for this persona")
     sub_enhance_dry_run.add_argument("--limit", type=int, default=10, help="Maximum jobs to process")
     sub_enhance_dry_run.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    sub_enhance_sidecar_run = enhance_subparsers.add_parser("sidecar-run", help="Process queued jobs through an HTTP sidecar")
+    sub_enhance_sidecar_run.add_argument("--db", help="Path to transcript.db")
+    sub_enhance_sidecar_run.add_argument("--endpoint", required=True, help="Sidecar endpoint URL")
+    sub_enhance_sidecar_run.add_argument("--persona", help="Only process jobs for this persona")
+    sub_enhance_sidecar_run.add_argument("--limit", type=int, default=10, help="Maximum jobs to process")
+    sub_enhance_sidecar_run.add_argument("--timeout", type=int, default=30, help="HTTP timeout in seconds")
+    sub_enhance_sidecar_run.add_argument("--token-env", default="", help="Optional env var containing bearer token")
+    sub_enhance_sidecar_run.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     sub_enhance_sidecar = enhance_subparsers.add_parser("serve-dry-run", help="Run a deterministic local enhancement sidecar")
     sub_enhance_sidecar.add_argument("--host", default="127.0.0.1", help="Bind host")
     sub_enhance_sidecar.add_argument("--port", type=int, default=8944, help="Bind port")
@@ -312,6 +320,44 @@ def _run_enhance(args):
             payload,
             json_output=args.json,
             lines=[f"Processed enhancement jobs: {len(processed)}"],
+        )
+        return
+
+    if args.enhance_command == "sidecar-run":
+        import os
+
+        from .memory_enhancement_http_client import MemoryEnhancementHttpClient
+        from .memory_enhancement_runner import run_memory_enhancement_provider_batch
+
+        bearer_token = ""
+        if args.token_env:
+            bearer_token = os.environ.get(args.token_env, "")
+            if not bearer_token:
+                print("Bearer token env var is not set", file=sys.stderr)
+                sys.exit(2)
+        client = MemoryEnhancementHttpClient(
+            args.endpoint,
+            bearer_token=bearer_token,
+            timeout_seconds=args.timeout,
+        )
+        conn = _open_memory_db(args.db)
+        try:
+            receipt = run_memory_enhancement_provider_batch(
+                conn,
+                client=client,
+                persona=args.persona,
+                limit=args.limit,
+            )
+        finally:
+            conn.close()
+
+        _emit_json_or_lines(
+            receipt,
+            json_output=args.json,
+            lines=[
+                f"Processed enhancement jobs: {receipt['processed_count']}",
+                f"Failed enhancement jobs: {receipt['failure_count']}",
+            ],
         )
         return
 

@@ -1,12 +1,14 @@
 import json
 import sqlite3
 import sys
+import threading
 from pathlib import Path
 
 import pytest
 
 from chimera_memory.cli import main
-from chimera_memory.memory import index_file, init_memory_tables
+from chimera_memory.memory import index_file, init_memory_tables, memory_enhancement_enqueue
+from chimera_memory.memory_enhancement_sidecar import create_dry_run_sidecar_server
 
 
 def _index_cli_memory(db_path: Path, memory_path: Path) -> None:
@@ -118,3 +120,64 @@ def test_cli_enhance_enqueue_missing_file_exits_cleanly(tmp_path: Path, monkeypa
 
     assert exc_info.value.code == 2
     assert "Enhancement enqueue failed" in capsys.readouterr().out
+
+
+def test_cli_enhance_sidecar_run_processes_queued_job(tmp_path: Path, monkeypatch, capsys) -> None:
+    db_path = tmp_path / "transcript.db"
+    memory_path = tmp_path / "sidecar-run.md"
+    _index_cli_memory(db_path, memory_path)
+    conn = sqlite3.connect(db_path)
+    try:
+        init_memory_tables(conn)
+        enqueued = memory_enhancement_enqueue(conn, file_path=memory_path.name)
+    finally:
+        conn.close()
+    assert enqueued["ok"] is True
+
+    fake_token = "TEST_ONLY_SIDE_TOKEN"
+    server = create_dry_run_sidecar_server("127.0.0.1", 0, bearer_token=fake_token)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setenv("CHIMERA_MEMORY_TEST_SIDECAR_TOKEN", fake_token)
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "chimera-memory",
+                "enhance",
+                "sidecar-run",
+                "--db",
+                str(db_path),
+                "--endpoint",
+                f"http://127.0.0.1:{server.server_port}/enhance",
+                "--persona",
+                "asa",
+                "--token-env",
+                "CHIMERA_MEMORY_TEST_SIDECAR_TOKEN",
+                "--json",
+            ],
+        )
+
+        main()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["processed_count"] == 1
+    assert receipt["failure_count"] == 0
+    assert receipt["processed"][0]["job_id"] == enqueued["job"]["job_id"]
+    assert fake_token not in json.dumps(receipt)
+
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT status, result_payload FROM memory_enhancement_jobs WHERE job_id = ?",
+            (enqueued["job"]["job_id"],),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "succeeded"
+    assert '"can_use_as_instruction": false' in row[1]
