@@ -6,12 +6,18 @@ import json
 import time
 from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any
+from typing import Any, Protocol
 
 from .enhancement_worker import derive_dry_run_metadata
 from .memory_enhancement import ENHANCEMENT_SCHEMA_VERSION, normalize_memory_enhancement_response
+from .memory_enhancement_provider import classify_enhancement_failure
 
 MAX_REQUEST_BYTES = 2_000_000
+
+
+class MemoryEnhancementProviderClient(Protocol):
+    def invoke(self, invocation: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Return provider metadata for one invocation."""
 
 
 def build_dry_run_sidecar_response(invocation: Mapping[str, Any]) -> dict[str, Any]:
@@ -30,6 +36,39 @@ def build_dry_run_sidecar_response(invocation: Mapping[str, Any]) -> dict[str, A
         "metadata": metadata,
         "diagnostics": {
             "model": "dry-run/deterministic-local",
+            "input_chars": len(wrapped),
+            "output_chars": len(encoded_metadata),
+            "duration_ms": max(0, int((time.perf_counter() - started) * 1000)),
+            "token_estimate": max(1, len(wrapped) // 4) if wrapped else 0,
+            "rate_limit_bucket": "memory_enhancement",
+        },
+        "error": {
+            "code": "",
+            "message": "",
+        },
+    }
+
+
+def build_provider_sidecar_response(
+    invocation: Mapping[str, Any],
+    client: MemoryEnhancementProviderClient,
+) -> dict[str, Any]:
+    """Build a successful real-provider sidecar response."""
+    started = time.perf_counter()
+    metadata = normalize_memory_enhancement_response(client.invoke(invocation))
+    request_payload = invocation.get("request") if isinstance(invocation.get("request"), Mapping) else {}
+    provider = invocation.get("provider") if isinstance(invocation.get("provider"), Mapping) else {}
+    encoded_metadata = json.dumps(metadata, separators=(",", ":"), sort_keys=True)
+    wrapped = str(request_payload.get("wrapped_content") or "")
+    provider_id = str(provider.get("provider_id") or "unknown")
+    model = str(provider.get("model") or "unknown")
+    return {
+        "schema_version": ENHANCEMENT_SCHEMA_VERSION,
+        "request_id": str(invocation.get("request_id") or ""),
+        "status": "ok",
+        "metadata": metadata,
+        "diagnostics": {
+            "model": f"{provider_id}/{model}",
             "input_chars": len(wrapped),
             "output_chars": len(encoded_metadata),
             "duration_ms": max(0, int((time.perf_counter() - started) * 1000)),
@@ -79,6 +118,22 @@ def create_dry_run_sidecar_server(
     return ThreadingHTTPServer((host, port), Handler)
 
 
+def create_provider_sidecar_server(
+    host: str = "127.0.0.1",
+    port: int = 8944,
+    *,
+    client: MemoryEnhancementProviderClient,
+    bearer_token: str = "",
+) -> ThreadingHTTPServer:
+    """Create an HTTP server that calls an injected provider client."""
+
+    class Handler(ProviderMemoryEnhancementSidecarHandler):
+        expected_bearer_token = bearer_token
+        provider_client = client
+
+    return ThreadingHTTPServer((host, port), Handler)
+
+
 def run_dry_run_sidecar(
     host: str = "127.0.0.1",
     port: int = 8944,
@@ -87,6 +142,21 @@ def run_dry_run_sidecar(
 ) -> None:
     """Run the dry-run sidecar forever."""
     server = create_dry_run_sidecar_server(host, port, bearer_token=bearer_token)
+    try:
+        server.serve_forever()
+    finally:
+        server.server_close()
+
+
+def run_provider_sidecar(
+    host: str = "127.0.0.1",
+    port: int = 8944,
+    *,
+    client: MemoryEnhancementProviderClient,
+    bearer_token: str = "",
+) -> None:
+    """Run the provider-backed sidecar forever."""
+    server = create_provider_sidecar_server(host, port, client=client, bearer_token=bearer_token)
     try:
         server.serve_forever()
     finally:
@@ -139,3 +209,43 @@ class DryRunMemoryEnhancementSidecarHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+class ProviderMemoryEnhancementSidecarHandler(DryRunMemoryEnhancementSidecarHandler):
+    """HTTP handler for real provider-backed enhancement."""
+
+    provider_client: MemoryEnhancementProviderClient
+
+    def do_POST(self) -> None:  # noqa: N802 - stdlib handler method
+        if self.path != "/enhance":
+            self._write_json(404, build_dry_run_sidecar_error("not_found"))
+            return
+        if self.expected_bearer_token:
+            expected = f"Bearer {self.expected_bearer_token}"
+            if self.headers.get("Authorization", "") != expected:
+                self._write_json(401, build_dry_run_sidecar_error("auth_error"))
+                return
+
+        try:
+            content_length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._write_json(400, build_dry_run_sidecar_error("parse_error"))
+            return
+        if content_length < 1 or content_length > MAX_REQUEST_BYTES:
+            self._write_json(413, build_dry_run_sidecar_error("quota_exceeded"))
+            return
+
+        raw_body = self.rfile.read(content_length)
+        try:
+            payload = json.loads(raw_body.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            self._write_json(400, build_dry_run_sidecar_error("parse_error"))
+            return
+        if not isinstance(payload, dict):
+            self._write_json(400, build_dry_run_sidecar_error("parse_error"))
+            return
+
+        try:
+            self._write_json(200, build_provider_sidecar_response(payload, self.provider_client))
+        except Exception as exc:
+            self._write_json(502, build_dry_run_sidecar_error(classify_enhancement_failure(str(exc))))

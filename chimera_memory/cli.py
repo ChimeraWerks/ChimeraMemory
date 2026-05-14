@@ -87,6 +87,11 @@ def main():
     sub_enhance_sidecar.add_argument("--host", default="127.0.0.1", help="Bind host")
     sub_enhance_sidecar.add_argument("--port", type=int, default=8944, help="Bind port")
     sub_enhance_sidecar.add_argument("--token-env", default="", help="Optional env var containing bearer token")
+    sub_enhance_provider_sidecar = enhance_subparsers.add_parser("serve-provider", help="Run a provider-backed enhancement sidecar")
+    sub_enhance_provider_sidecar.add_argument("--host", default="127.0.0.1", help="Bind host")
+    sub_enhance_provider_sidecar.add_argument("--port", type=int, default=8944, help="Bind port")
+    sub_enhance_provider_sidecar.add_argument("--token-env", default="", help="Optional env var containing sidecar HTTP bearer token")
+    sub_enhance_provider_sidecar.add_argument("--provider-token-env", default="", help="Optional env var containing the selected model provider token")
 
     args = parser.parse_args()
 
@@ -374,6 +379,33 @@ def _run_enhance(args):
                 sys.exit(2)
         print(f"Dry-run memory enhancement sidecar listening on http://{args.host}:{args.port}/enhance")
         run_dry_run_sidecar(args.host, args.port, bearer_token=bearer_token)
+        return
+
+    if args.enhance_command == "serve-provider":
+        import os
+
+        from .memory_enhancement_model_client import ProviderModelMemoryEnhancementClient
+        from .memory_enhancement_sidecar import run_provider_sidecar
+
+        bearer_token = ""
+        if args.token_env:
+            bearer_token = os.environ.get(args.token_env, "")
+            if not bearer_token:
+                print("Sidecar bearer token env var is not set", file=sys.stderr)
+                sys.exit(2)
+        provider_token = ""
+        if args.provider_token_env:
+            provider_token = os.environ.get(args.provider_token_env, "")
+            if not provider_token:
+                print("Provider token env var is not set", file=sys.stderr)
+                sys.exit(2)
+        print(f"Provider memory enhancement sidecar listening on http://{args.host}:{args.port}/enhance")
+        run_provider_sidecar(
+            args.host,
+            args.port,
+            client=ProviderModelMemoryEnhancementClient(bearer_token=provider_token),
+            bearer_token=bearer_token,
+        )
         return
 
     print("Missing enhance command. Try: chimera-memory enhance provider-plan", file=sys.stderr)

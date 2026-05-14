@@ -181,3 +181,71 @@ def test_cli_enhance_sidecar_run_processes_queued_job(tmp_path: Path, monkeypatc
         conn.close()
     assert row[0] == "succeeded"
     assert '"can_use_as_instruction": false' in row[1]
+
+
+def test_cli_enhance_serve_provider_uses_separate_sidecar_and_provider_tokens(monkeypatch, capsys) -> None:
+    sidecar_token = "TEST_ONLY_SIDECAR_TOKEN"
+    provider_token = "TEST_ONLY_PROVIDER_TOKEN"
+    captured = {}
+
+    def fake_run_provider_sidecar(host, port, *, client, bearer_token):
+        captured["host"] = host
+        captured["port"] = port
+        captured["client"] = client
+        captured["bearer_token"] = bearer_token
+
+    monkeypatch.setenv("CHIMERA_MEMORY_TEST_SIDECAR_TOKEN", sidecar_token)
+    monkeypatch.setenv("CHIMERA_MEMORY_TEST_PROVIDER_TOKEN", provider_token)
+    monkeypatch.setattr(
+        "chimera_memory.memory_enhancement_sidecar.run_provider_sidecar",
+        fake_run_provider_sidecar,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "chimera-memory",
+            "enhance",
+            "serve-provider",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            "8998",
+            "--token-env",
+            "CHIMERA_MEMORY_TEST_SIDECAR_TOKEN",
+            "--provider-token-env",
+            "CHIMERA_MEMORY_TEST_PROVIDER_TOKEN",
+        ],
+    )
+
+    main()
+
+    output = capsys.readouterr().out
+    assert captured["host"] == "127.0.0.1"
+    assert captured["port"] == 8998
+    assert captured["bearer_token"] == sidecar_token
+    assert captured["client"].bearer_token == provider_token
+    assert sidecar_token not in output
+    assert provider_token not in output
+
+
+def test_cli_enhance_serve_provider_missing_provider_token_exits_without_env_name(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "chimera-memory",
+            "enhance",
+            "serve-provider",
+            "--provider-token-env",
+            "CHIMERA_MEMORY_TEST_PROVIDER_TOKEN",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 2
+    captured = capsys.readouterr()
+    assert "Provider token env var is not set" in captured.err
+    assert "CHIMERA_MEMORY_TEST_PROVIDER_TOKEN" not in captured.err
