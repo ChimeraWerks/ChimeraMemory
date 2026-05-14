@@ -817,6 +817,72 @@ def create_server():
         )
 
     @server.tool()
+    def memory_enhancement_provider_plan() -> str:
+        """Show the safe provider-resolution plan for memory enhancement."""
+        from .memory_enhancement_provider import resolve_enhancement_provider_plan, safe_provider_receipt
+
+        receipt = safe_provider_receipt(resolve_enhancement_provider_plan(os.environ))
+        lines = [
+            f"Selected provider: {receipt['selected_provider']}",
+            f"Selected model: {receipt['selected_model']}",
+            "",
+            "Candidates:",
+        ]
+        for candidate in receipt.get("candidates", []):
+            lines.append(
+                f"- {candidate['provider_id']} / {candidate['model']}: "
+                f"{'available' if candidate['available'] else candidate['reason']} "
+                f"(credential_ref_present={candidate['credential_ref_present']})"
+            )
+        lines.append("")
+        lines.append("Credential refs and credential values are not included in this report.")
+        return "\n".join(lines)
+
+    @server.tool()
+    def memory_enhancement_enqueue(
+        file_path: str,
+        requested_provider: str = "",
+        requested_model: str = "",
+        force: bool = False,
+    ) -> str:
+        """Queue an indexed memory file for metadata enhancement."""
+        _ensure_memory_indexed()
+        from .memory import memory_enhancement_enqueue as _enqueue
+
+        result = _enqueue(
+            _get_memory_conn(),
+            file_path=file_path,
+            requested_provider=requested_provider,
+            requested_model=requested_model,
+            force=force,
+        )
+        if not result.get("ok"):
+            return f"Enhancement enqueue failed: {result.get('error', 'unknown error')}"
+        job = result.get("job") or {}
+        action = "Enqueued" if result.get("enqueued") else "Already queued"
+        return (
+            f"{action} enhancement job {job.get('job_id', '')} "
+            f"for {job.get('path', file_path)} "
+            f"status={job.get('status', '')} persona={job.get('persona', '')}"
+        )
+
+    @server.tool()
+    def memory_enhancement_dry_run(persona: str | None = None, limit: int = 10) -> str:
+        """Process queued enhancement jobs with deterministic local metadata."""
+        from .enhancement_worker import run_memory_enhancement_dry_run as _dry_run
+
+        processed = _dry_run(_get_memory_conn(), persona=persona, limit=limit)
+        if not processed:
+            return "No enhancement jobs processed."
+        lines = [f"Processed enhancement jobs: {len(processed)}"]
+        for job in processed[:20]:
+            lines.append(
+                f"- {job.get('job_id', '')} {job.get('persona', '')} "
+                f"{job.get('path', '')} status={job.get('status', '')}"
+            )
+        return "\n".join(lines)
+
+    @server.tool()
     def memory_gaps(persona: str | None = None) -> str:
         """Detect knowledge gaps using graph analysis. Finds disconnected clusters and isolated files."""
         _ensure_memory_indexed()

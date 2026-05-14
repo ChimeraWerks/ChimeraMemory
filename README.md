@@ -1,6 +1,6 @@
 # Chimera Memory
 
-**Perfect recall and cognitive memory for any agent harness.** A standalone MCP server that indexes session transcripts into queryable SQLite, adds a curated memory layer with semantic search and zone-based loading, and gives you 20 tools for everything from "what did we talk about yesterday" to "which memories are stale and should decay."
+**Perfect recall and cognitive memory for any agent harness.** A standalone MCP server that indexes session transcripts into queryable SQLite, adds a curated memory layer with semantic search and zone-based loading, and gives you tools for everything from "what did we talk about yesterday" to "which memories are stale and should decay."
 
 Works with Claude Code, Codex CLI, and Hermes Agent. No required dependency on any other repo.
 
@@ -203,7 +203,7 @@ Each PA apply writes a backup, a receipt, and updates the install-state ledger .
 └─────────────────────────────────────────────────────────────┘
 ```
 
-## The 20 MCP Tools
+## MCP Tools
 
 ### Transcript Layer (everything the harness wrote)
 
@@ -236,6 +236,18 @@ Each PA apply writes a backup, a receipt, and updates the install-state ledger .
 | `memory_reindex` | Force re-scan after bulk file changes. |
 | `memory_mark_failure` | Flag a memory that led to wrong advice. Penalizes its zone score. |
 | `memory_consolidation_report` | Dry-run analysis: what would be decayed, staled, or archived. |
+
+### Governance and Enhancement
+
+| Tool | What it does |
+|------|-------------|
+| `memory_recall_trace_query` | Inspect recent recall traces and optional returned items. Useful for tuning retrieval quality. |
+| `memory_audit_query` | Inspect memory audit events such as recall, review, and enhancement operations. |
+| `memory_review_pending` | List generated or restricted memories that need review before instructional use. |
+| `memory_review_action` | Confirm, restrict, reject, stale, merge, dispute, or supersede a memory review item. |
+| `memory_enhancement_provider_plan` | Show the selected enhancement provider and budget caps without exposing credential refs. |
+| `memory_enhancement_enqueue` | Queue an indexed memory file for metadata enrichment. |
+| `memory_enhancement_dry_run` | Process queued enhancement jobs with deterministic local metadata. No model call required. |
 
 ### Cognitive Analytics
 
