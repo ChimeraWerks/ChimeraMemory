@@ -30,7 +30,7 @@ The OB1-inspired lift is implemented through Phase 5c plus a module split:
 - Phase 3: provenance, confidence, lifecycle, review, sensitivity, and use-policy fields.
 - Phase 4: review queue tools.
 - Phase 5a-c: sidecar contract, enhancement job queue, deterministic dry-run worker.
-- Phase 5d groundwork: provider priority, credential-reference boundary, budget caps, safe invocation envelope, and bounded failure categories.
+- Phase 5d groundwork: provider priority, credential-reference boundary, budget caps, safe invocation envelope, bounded failure categories, and injected-client runner boundary.
 - Refactor: `memory.py` split into focused schema, governance, observability, review, enhancement queue, and frontmatter modules.
 
 Pending larger work:
@@ -52,6 +52,7 @@ Do not use `memory.py` as a dumping ground. It is now the facade/orchestration l
 - `chimera_memory/memory_review.py`: human review queue actions and review audit logging.
 - `chimera_memory/memory_enhancement.py`: model-free sidecar request/response contract and untrusted-content wrapper.
 - `chimera_memory/memory_enhancement_provider.py`: provider priority, credential references, budget policy, safe invocation envelope, bounded failure categories.
+- `chimera_memory/memory_enhancement_runner.py`: provider-aware batch runner using an injected client protocol. No token storage or provider-specific network code.
 - `chimera_memory/memory_enhancement_queue.py`: SQLite queue for enhancement jobs, enqueue/claim/complete helpers.
 - `chimera_memory/memory_frontmatter.py`: markdown frontmatter parsing shared by indexing and enhancement enqueue.
 - `chimera_memory/enhancement_worker.py`: deterministic dry-run worker. No OAuth/model calls here yet.
@@ -63,6 +64,7 @@ Dependency direction matters:
 - Observability imports no review or queue modules.
 - Review may depend on governance concepts and observability audit emission.
 - Enhancement provider policy may depend on the sidecar contract only.
+- Enhancement runner may depend on provider policy and enhancement queue helpers.
 - Enhancement queue may depend on frontmatter, observability, and the sidecar contract.
 - Avoid imports from `memory.py` inside focused modules. Importing the facade from a focused module risks a circular import.
 

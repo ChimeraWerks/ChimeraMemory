@@ -112,6 +112,23 @@ Rules:
 - Credential references are names such as `oauth:openai-memory`, not credentials.
 - This module may import the sidecar contract, but not queue/review/schema/facade modules.
 
+### `memory_enhancement_runner.py`
+
+Owns the provider-aware batch runner boundary:
+
+- claims pending jobs
+- builds provider invocation envelopes
+- calls an injected `MemoryEnhancementClient`
+- completes jobs with normalized metadata
+- records failures as bounded categories only
+
+Rules:
+
+- No provider-specific SDK code here.
+- No raw OAuth token resolution here.
+- Host applications can inject a client that knows how to resolve scoped credentials.
+- Failure storage must use categories, not raw provider stderr or exception text.
+
 ### `memory_enhancement_queue.py`
 
 Owns enhancement job persistence:
@@ -159,6 +176,10 @@ memory_enhancement_queue.py
 memory_enhancement_provider.py
   imports memory_enhancement.py
 
+memory_enhancement_runner.py
+  imports memory_enhancement_provider.py
+  imports memory_enhancement_queue.py
+
 memory_review.py
   imports memory_observability.py
 
@@ -179,6 +200,7 @@ Avoid:
 - review and queue importing each other
 - model/OAuth code inside the queue module
 - raw credential values in provider policy or safe receipts
+- raw provider exception text in queue failure storage
 
 ## Test Map
 
@@ -188,6 +210,7 @@ Avoid:
 - Review: `tests/test_memory_review.py`
 - Sidecar contract: `tests/test_memory_enhancement.py`
 - Provider policy: `tests/test_memory_enhancement_provider.py`
+- Provider runner: `tests/test_memory_enhancement_runner.py`
 - Enhancement queue: `tests/test_memory_enhancement_queue.py`
 - Dry-run worker: `tests/test_memory_enhancement_worker.py`
 

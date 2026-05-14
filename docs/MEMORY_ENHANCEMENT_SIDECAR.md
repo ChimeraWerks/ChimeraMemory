@@ -154,6 +154,28 @@ Provider receipts intentionally expose only whether a credential reference is
 present. They do not include credential reference values and never include raw
 credential material.
 
+## Provider Runner Boundary
+
+`chimera_memory/memory_enhancement_runner.py` defines the batch runner that a
+host application can use before real provider adapters exist.
+
+The runner:
+
+- resolves the provider plan
+- claims queued jobs
+- builds a safe invocation envelope
+- calls an injected `MemoryEnhancementClient`
+- completes the job with normalized metadata
+- stores failures as bounded categories only
+
+CM does not resolve raw OAuth tokens in this runner. A host application such as
+PersonifyAgents can inject a client that resolves scoped credentials from its
+own secret store and performs the provider-specific call.
+
+Failure storage is intentionally narrow. Raw provider stderr, exception text,
+request content, and credential values do not get written to the queue. The job
+stores a category such as `auth_error` or `parse_error` plus provider/model ids.
+
 ### Response
 
 ```json
