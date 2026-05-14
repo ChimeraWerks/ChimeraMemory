@@ -1,6 +1,7 @@
 """CLI entry point for chimera-memory."""
 
 import argparse
+import json
 import sys
 
 
@@ -35,6 +36,13 @@ def main():
     sub_split.add_argument("--apply", action="store_true", help="Write target DBs. Default is dry-run")
     sub_split.add_argument("--replace", action="store_true", help="Replace existing target DBs. Requires --apply")
 
+    # codex: inspect Codex MCP wiring without exposing raw env values
+    sub_codex = subparsers.add_parser("codex", help="Codex integration helpers")
+    codex_subparsers = sub_codex.add_subparsers(dest="codex_command")
+    sub_codex_doctor = codex_subparsers.add_parser("doctor", help="Check Codex MCP ChimeraMemory setup")
+    sub_codex_doctor.add_argument("--config", help="Path to Codex mcp_servers.json")
+    sub_codex_doctor.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
     args = parser.parse_args()
 
     if args.command == "serve":
@@ -46,6 +54,8 @@ def main():
         _run_stats(args)
     elif args.command == "split-db":
         _run_split_db(args)
+    elif args.command == "codex":
+        _run_codex(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -131,6 +141,27 @@ def _run_split_db(args):
         replace=args.replace,
     )
     print(results_to_json(results))
+
+
+def _run_codex(args):
+    if args.codex_command == "doctor":
+        from .codex_setup import format_codex_doctor_report, inspect_codex_mcp_config
+
+        report = inspect_codex_mcp_config(args.config)
+        if args.json:
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            print(format_codex_doctor_report(report))
+
+        status = report.get("status")
+        if status == "ok":
+            sys.exit(0)
+        if status == "warning":
+            sys.exit(1)
+        sys.exit(2)
+
+    print("Missing Codex command. Try: chimera-memory codex doctor", file=sys.stderr)
+    sys.exit(2)
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ passed = 0
 failed = 0
 
 
-def test(name, condition):
+def _check(name, condition):
     global passed, failed
     if condition:
         print(f"  PASS: {name}")
@@ -77,9 +77,9 @@ def run():
             init_memory_tables(conn)
             full_reindex(conn, personas, embed=False)
 
-            test("Asa memory indexed", _search(conn, "asa private scope marker") == [("asa", "memory/procedural/asa.md")])
-            test("Shared memory indexed", _search(conn, "shared team scope marker") == [("shared", "team.md")])
-            test("Sarah memory excluded", _search(conn, "sarah private scope marker") == [])
+            _check("Asa memory indexed", _search(conn, "asa private scope marker") == [("asa", "memory/procedural/asa.md")])
+            _check("Shared memory indexed", _search(conn, "shared team scope marker") == [("shared", "team.md")])
+            _check("Sarah memory excluded", _search(conn, "sarah private scope marker") == [])
 
         print("\n=== CLEANUP OTHER PERSONAS ===")
         mixed_db = TranscriptDB(root / "mixed.db")
@@ -93,8 +93,8 @@ def run():
             counts = cleanup_other_personas(conn, "asa")
             after = _search(conn, "sarah private scope marker")
 
-            test("Unscoped DB initially contains Sarah", before == [("sarah", "memory/procedural/sarah.md")])
-            test("Cleanup removes Sarah rows", after == [] and counts.get("memory_files", 0) >= 1)
+            _check("Unscoped DB initially contains Sarah", before == [("sarah", "memory/procedural/sarah.md")])
+            _check("Cleanup removes Sarah rows", after == [] and counts.get("memory_files", 0) >= 1)
 
         print("\n=== SCOPED WATCHER ===")
         watcher_db = TranscriptDB(root / "watcher.db")
@@ -103,7 +103,7 @@ def run():
             full_reindex(conn, personas, embed=False)
 
         observer = start_memory_watcher(watcher_db, personas)
-        test("Watcher started", observer is not None)
+        _check("Watcher started", observer is not None)
         if observer is not None:
             try:
                 _write_memory(
@@ -117,8 +117,8 @@ def run():
                 time.sleep(2.0)
                 with watcher_db.connection() as conn:
                     init_memory_tables(conn)
-                    test("Watcher indexes scoped persona", _search(conn, "asa live watcher marker") == [("asa", "memory/procedural/asa-new.md")])
-                    test("Watcher ignores other persona", _search(conn, "sarah live watcher marker") == [])
+                    _check("Watcher indexes scoped persona", _search(conn, "asa live watcher marker") == [("asa", "memory/procedural/asa-new.md")])
+                    _check("Watcher ignores other persona", _search(conn, "sarah live watcher marker") == [])
             finally:
                 observer.stop()
                 observer.join(timeout=2)

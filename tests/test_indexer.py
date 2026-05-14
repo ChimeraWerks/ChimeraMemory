@@ -15,7 +15,7 @@ passed = 0
 failed = 0
 
 
-def test(name, condition):
+def _check(name, condition):
     global passed, failed
     if condition:
         print(f"  PASS: {name}")
@@ -69,23 +69,23 @@ def run():
 
     indexer.backfill(progress_callback=progress)
 
-    test("Backfill progress callback", len(progress_log) > 0 and progress_log[-1][0] == progress_log[-1][1])
+    _check("Backfill progress callback", len(progress_log) > 0 and progress_log[-1][0] == progress_log[-1][1])
 
     stats = db.stats()
-    test("Backfill entry count", stats["entry_count"] > 0)
-    test("Backfill session count", stats["session_count"] == 2)
+    _check("Backfill entry count", stats["entry_count"] > 0)
+    _check("Backfill session count", stats["session_count"] == 2)
 
     # Check sessions table
     with db.connection() as conn:
         s1 = conn.execute("SELECT * FROM sessions WHERE session_id = ?", ("session-1",)).fetchone()
         s2 = conn.execute("SELECT * FROM sessions WHERE session_id = ?", ("session-2",)).fetchone()
-    test("Session 1 metadata", s1 and s1["git_branch"] == "main" and s1["persona"] == "sarah")
-    test("Session 2 metadata", s2 and s2["git_branch"] == "dev")
+    _check("Session 1 metadata", s1 and s1["git_branch"] == "main" and s1["persona"] == "sarah")
+    _check("Session 2 metadata", s2 and s2["git_branch"] == "dev")
 
     # Check discord messages indexed
     r = discord_recall(db, channel="123")
     discord_msgs = [x for x in r if x["entry_type"] in ("discord_inbound", "discord_outbound")]
-    test("Discord messages indexed", len(discord_msgs) >= 2)
+    _check("Discord messages indexed", len(discord_msgs) >= 2)
 
     # === IMPORT LOG ===
 
@@ -93,13 +93,13 @@ def run():
 
     with db.connection() as conn:
         log_entries = conn.execute("SELECT * FROM import_log").fetchall()
-    test("Import log has entries", len(log_entries) == 2)
+    _check("Import log has entries", len(log_entries) == 2)
 
     # Re-run backfill — should skip unchanged files
     initial_count = stats["entry_count"]
     indexer.backfill()
     stats2 = db.stats()
-    test("Re-backfill skips unchanged (same count)", stats2["entry_count"] == initial_count)
+    _check("Re-backfill skips unchanged (same count)", stats2["entry_count"] == initial_count)
 
     # === FILE HASH ===
 
@@ -108,21 +108,21 @@ def run():
     path1 = jsonl_dir / "session-1.jsonl"
     hash1 = get_file_hash(path1)
     hash2 = get_file_hash(path1)
-    test("Same file same hash", hash1 == hash2)
+    _check("Same file same hash", hash1 == hash2)
 
     hash3 = get_file_hash(jsonl_dir / "session-2.jsonl")
-    test("Different files different hash", hash1 != hash3)
+    _check("Different files different hash", hash1 != hash3)
 
     # Modify file and check hash changes
     with open(path1, "a") as f:
         f.write(json.dumps({"type": "user", "message": {"content": "appended"}, "timestamp": "2026-04-05T12:00:00Z", "sessionId": "session-1", "uuid": "u99"}) + "\n")
     hash4 = get_file_hash(path1)
-    test("Modified file different hash", hash1 != hash4)
+    _check("Modified file different hash", hash1 != hash4)
 
     # Re-backfill should pick up the changed file
     indexer.backfill()
     stats3 = db.stats()
-    test("Modified file re-indexed", stats3["entry_count"] > initial_count)
+    _check("Modified file re-indexed", stats3["entry_count"] > initial_count)
 
     # === TAIL-READ ===
 
@@ -143,13 +143,13 @@ def run():
     # Tail-read should pick up only the new content
     indexer.tail_file(new_file)
     r = discord_recall(db, search="Tail test", limit=10)
-    test("Tail-read picks up appended content", len(r) >= 2)
+    _check("Tail-read picks up appended content", len(r) >= 2)
 
     # Tail-read with no new content should be a no-op
     before_count = db.stats()["entry_count"]
     indexer.tail_file(new_file)
     after_count = db.stats()["entry_count"]
-    test("Tail-read no-op when no new content", before_count == after_count)
+    _check("Tail-read no-op when no new content", before_count == after_count)
 
     # === CONCURRENT / EDGE CASES ===
 
@@ -161,7 +161,7 @@ def run():
     empty_db = TranscriptDB(Path(tmpdir) / "empty.db")
     empty_indexer = Indexer(empty_db, empty_dir)
     empty_indexer.backfill()  # Should not crash
-    test("Empty directory backfill", empty_db.stats()["entry_count"] == 0)
+    _check("Empty directory backfill", empty_db.stats()["entry_count"] == 0)
 
     # Recursive Codex source root
     codex_root = Path(tmpdir) / "codex_sessions"
@@ -214,12 +214,12 @@ def run():
         else:
             os.environ["CHIMERA_PERSONA_ROOT"] = old_persona_root
     codex_results = discord_recall(codex_db, search="Codex", limit=10)
-    test("Codex recursive backfill", len(codex_results) >= 2 and codex_db.stats()["session_count"] == 1)
+    _check("Codex recursive backfill", len(codex_results) >= 2 and codex_db.stats()["session_count"] == 1)
     other_results = discord_recall(codex_db, search="Other persona", limit=10)
-    test("Codex persona root filter", len(other_results) == 0)
+    _check("Codex persona root filter", len(other_results) == 0)
     with codex_db.connection() as conn:
         codex_persona_entries = conn.execute("SELECT COUNT(*) FROM transcript WHERE persona = 'asa'").fetchone()[0]
-    test("Codex persona tagged", codex_persona_entries >= 2)
+    _check("Codex persona tagged", codex_persona_entries >= 2)
 
     # File with only skip-type entries
     write_jsonl(jsonl_dir, "session-skiponly.jsonl", [
@@ -227,7 +227,7 @@ def run():
         {"type": "custom-title", "customTitle": "Test", "sessionId": "skip-1"},
     ])
     indexer.index_file(jsonl_dir / "session-skiponly.jsonl")
-    test("Skip-only file (no crash)", True)
+    _check("Skip-only file (no crash)", True)
 
     # File with single partial line (simulating active write)
     partial_path = jsonl_dir / "session-partial.jsonl"
@@ -237,13 +237,13 @@ def run():
     indexer.index_file(partial_path)
     # Should index the complete line, ignore the partial
     r = discord_recall(db, search="complete", limit=5)
-    test("Partial line handling", len(r) >= 1)
+    _check("Partial line handling", len(r) >= 1)
 
     # Non-JSONL files in directory (should be ignored)
     (jsonl_dir / "readme.txt").write_text("not a jsonl file")
     (jsonl_dir / "data.json").write_text('{"not": "jsonl"}')
     indexer.backfill()  # Should not crash or try to parse non-.jsonl files
-    test("Non-JSONL files ignored", True)
+    _check("Non-JSONL files ignored", True)
 
     # === PERSONA TAGGING ===
 
@@ -251,7 +251,7 @@ def run():
 
     with db.connection() as conn:
         sarah_entries = conn.execute("SELECT COUNT(*) FROM transcript WHERE persona = 'sarah'").fetchone()[0]
-    test("Persona tagged on entries", sarah_entries > 0)
+    _check("Persona tagged on entries", sarah_entries > 0)
 
     # Different persona
     db2 = TranscriptDB(Path(tmpdir) / "asa.db")
@@ -259,7 +259,7 @@ def run():
     idx2.backfill()
     with db2.connection() as conn:
         asa_entries = conn.execute("SELECT COUNT(*) FROM transcript WHERE persona = 'asa'").fetchone()[0]
-    test("Different persona tagged", asa_entries > 0)
+    _check("Different persona tagged", asa_entries > 0)
 
     shutil.rmtree(tmpdir)
     print(f"\nIndexer tests: {passed}/{passed + failed}")

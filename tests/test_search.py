@@ -12,7 +12,7 @@ passed = 0
 failed = 0
 
 
-def test(name, condition):
+def _check(name, condition):
     global passed, failed
     if condition:
         print(f"  PASS: {name}")
@@ -80,146 +80,146 @@ def run():
 
     # 1. Basic recall (last N)
     r = discord_recall(db, limit=5)
-    test("Basic recall (last 5)", len(r) == 5)
+    _check("Basic recall (last 5)", len(r) == 5)
 
     # 2. All messages
     r = discord_recall(db, limit=100)
-    test("All conversation messages", len(r) > 0 and all(
+    _check("All conversation messages", len(r) > 0 and all(
         x["entry_type"] in ("discord_inbound", "discord_outbound", "user_message", "assistant_message")
         for x in r
     ))
-    test("Tool calls excluded by default", not any(x["entry_type"] in ("tool_call", "tool_result") for x in r))
+    _check("Tool calls excluded by default", not any(x["entry_type"] in ("tool_call", "tool_result") for x in r))
 
     # 3. Channel filter
     r = discord_recall(db, channel="office-123")
     office_count = len(r)
-    test("Channel filter (office)", office_count > 0 and all(
+    _check("Channel filter (office)", office_count > 0 and all(
         x.get("chat_id") == "office-123" or x.get("chat_id") is None for x in r
     ))
 
     r = discord_recall(db, channel="breakroom-456")
-    test("Channel filter (breakroom)", len(r) == 1 and r[0]["author"] == "asa")
+    _check("Channel filter (breakroom)", len(r) == 1 and r[0]["author"] == "asa")
 
     r = discord_recall(db, channel="nonexistent-999")
-    test("Channel filter (nonexistent)", len(r) == 0)
+    _check("Channel filter (nonexistent)", len(r) == 0)
 
     # 4. Direction filter
     r = discord_recall(db, direction="inbound")
-    test("Direction inbound", len(r) > 0 and all(
+    _check("Direction inbound", len(r) > 0 and all(
         x["entry_type"] in ("discord_inbound", "user_message") for x in r
     ))
 
     r = discord_recall(db, direction="outbound")
-    test("Direction outbound", len(r) > 0 and all(
+    _check("Direction outbound", len(r) > 0 and all(
         x["entry_type"] in ("discord_outbound", "assistant_message") for x in r
     ))
 
     # 5. Author filter
     r = discord_recall(db, author="chimerawerks")
-    test("Author filter", len(r) > 0 and all(x["author"] == "chimerawerks" for x in r))
+    _check("Author filter", len(r) > 0 and all(x["author"] == "chimerawerks" for x in r))
 
     r = discord_recall(db, author="nobody")
-    test("Author filter (no match)", len(r) == 0)
+    _check("Author filter (no match)", len(r) == 0)
 
     # 6. Time range filters
     r = discord_recall(db, after="2026-04-05T10:04:00Z")
-    test("After filter", len(r) > 0 and all(x["timestamp"] > "2026-04-05T10:04:00Z" for x in r))
+    _check("After filter", len(r) > 0 and all(x["timestamp"] > "2026-04-05T10:04:00Z" for x in r))
 
     r = discord_recall(db, before="2026-04-05T10:02:00Z")
-    test("Before filter", len(r) > 0 and all(x["timestamp"] < "2026-04-05T10:02:00Z" for x in r))
+    _check("Before filter", len(r) > 0 and all(x["timestamp"] < "2026-04-05T10:02:00Z" for x in r))
 
     r = discord_recall(db, after="2026-04-05T10:00:00Z", before="2026-04-05T10:06:00Z")
-    test("After+Before range", len(r) > 0 and all(
+    _check("After+Before range", len(r) > 0 and all(
         "2026-04-05T10:00:00Z" < x["timestamp"] < "2026-04-05T10:06:00Z" for x in r
     ))
 
     # 7. Combined filters
     r = discord_recall(db, channel="office-123", direction="inbound", author="chimerawerks", limit=3)
-    test("Combined filters", len(r) > 0 and len(r) <= 3 and all(
+    _check("Combined filters", len(r) > 0 and len(r) <= 3 and all(
         x["author"] == "chimerawerks" for x in r
     ))
 
     # 8. Include tool calls
     r = discord_recall(db, include_tool_calls=True, limit=100)
     has_tool = any(x["entry_type"] == "tool_call" for x in r)
-    test("Include tool calls flag", has_tool)
+    _check("Include tool calls flag", has_tool)
 
     # 9. Chronological order
     r = discord_recall(db, limit=100)
     timestamps = [x["timestamp"] for x in r]
-    test("Chronological order", timestamps == sorted(timestamps))
+    _check("Chronological order", timestamps == sorted(timestamps))
 
     # 10. Message IDs preserved
     r = discord_recall(db, channel="office-123", limit=1)
-    test("Message IDs preserved", r[0].get("message_id") is not None)
+    _check("Message IDs preserved", r[0].get("message_id") is not None)
 
     # === FTS SEARCH ===
 
     # 11. Basic search
     r = discord_recall(db, search="umbrella")
-    test("FTS search 'umbrella'", len(r) > 0 and any("umbrella" in x.get("content", "").lower() for x in r))
+    _check("FTS search 'umbrella'", len(r) > 0 and any("umbrella" in x.get("content", "").lower() for x in r))
 
     # 12. Multi-word search
     r = discord_recall(db, search="weather Tokyo")
-    test("FTS search multi-word", len(r) > 0)
+    _check("FTS search multi-word", len(r) > 0)
 
     # 13. Search + channel filter
     r = discord_recall(db, search="umbrella", channel="office-123")
-    test("FTS + channel filter", len(r) > 0)
+    _check("FTS + channel filter", len(r) > 0)
 
     # 14. Search with no results
     r = discord_recall(db, search="xyznonexistent")
-    test("FTS no results", len(r) == 0)
+    _check("FTS no results", len(r) == 0)
 
     # 15. Search with FTS-unsafe characters
     r = discord_recall(db, search='test"OR"hack')
-    test("FTS injection safe (quotes)", True)  # Shouldn't crash
+    _check("FTS injection safe (quotes)", True)  # Shouldn't crash
 
     r = discord_recall(db, search="test*")
-    test("FTS injection safe (wildcard)", True)
+    _check("FTS injection safe (wildcard)", True)
 
     r = discord_recall(db, search="NOT everything")
-    test("FTS injection safe (NOT keyword)", True)
+    _check("FTS injection safe (NOT keyword)", True)
 
     # 16. Search with special model name
     r = discord_recall(db, search="Knirps T.200")
-    test("FTS with dots/numbers", len(r) > 0)
+    _check("FTS with dots/numbers", len(r) > 0)
 
     # 17. Empty search
     r = discord_recall(db, search="")
-    test("Empty search string", len(r) == 0)
+    _check("Empty search string", len(r) == 0)
 
     # === STATS ===
 
     # 18. Stats
     stats = transcript_stats(db)
-    test("Stats entry_count", stats["entry_count"] == 11)
-    test("Stats entry_types", "discord_inbound" in stats.get("entry_types", {}))
-    test("Stats sources", "discord" in stats.get("sources", {}))
+    _check("Stats entry_count", stats["entry_count"] == 11)
+    _check("Stats entry_types", "discord_inbound" in stats.get("entry_types", {}))
+    _check("Stats sources", "discord" in stats.get("sources", {}))
 
     # === EDGE CASES ===
 
     # 19. Limit 0
     r = discord_recall(db, limit=0)
-    test("Limit 0", len(r) == 0)
+    _check("Limit 0", len(r) == 0)
 
     # 20. Limit 1
     r = discord_recall(db, limit=1)
-    test("Limit 1", len(r) == 1)
+    _check("Limit 1", len(r) == 1)
 
     # 21. Very large limit
     r = discord_recall(db, limit=999999)
-    test("Very large limit", len(r) <= 11)  # Can't return more than what exists
+    _check("Very large limit", len(r) <= 11)  # Can't return more than what exists
 
     # === EMPTY DB ===
 
     # 22. Empty database
     empty_db = TranscriptDB(Path(tmpdir) / "empty.db")
     r = discord_recall(empty_db, limit=10)
-    test("Empty DB recall", len(r) == 0)
+    _check("Empty DB recall", len(r) == 0)
 
     stats = transcript_stats(empty_db)
-    test("Empty DB stats", stats["entry_count"] == 0 and stats["session_count"] == 0)
+    _check("Empty DB stats", stats["entry_count"] == 0 and stats["session_count"] == 0)
 
     teardown()
     print(f"\nSearch tests: {passed}/{passed + failed}")

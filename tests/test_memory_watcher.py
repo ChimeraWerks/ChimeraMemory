@@ -16,7 +16,7 @@ passed = 0
 failed = 0
 
 
-def test(name, condition):
+def _check(name, condition):
     global passed, failed
     if condition:
         print(f"  PASS: {name}")
@@ -51,13 +51,13 @@ def run():
         full_reindex(conn, personas, embed=False)
 
     print("=== INITIAL INDEX ===")
-    test(
+    _check(
         "Seed file indexed by full_reindex",
         any("seed.md" in p for p in _search_paths(db, "alphabetical seeding")),
     )
 
     observer = start_memory_watcher(db, personas)
-    test("Watcher started", observer is not None)
+    _check("Watcher started", observer is not None)
     if observer is None:
         print(f"\nMemory watcher tests: {passed}/{passed + failed}")
         return
@@ -70,7 +70,7 @@ def run():
             encoding="utf-8",
         )
         time.sleep(2.0)
-        test(
+        _check(
             "New file auto-indexed",
             any("new_memory.md" in p for p in _search_paths(db, "bravo charlie delta")),
         )
@@ -81,7 +81,7 @@ def run():
             encoding="utf-8",
         )
         time.sleep(2.0)
-        test(
+        _check(
             "Modification reflected in index",
             any("seed.md" in p for p in _search_paths(db, "echo foxtrot golf")),
         )
@@ -89,7 +89,7 @@ def run():
         print("\n=== FILE DELETION ===")
         new.unlink()
         time.sleep(2.0)
-        test(
+        _check(
             "Deletion removes file from index",
             not any("new_memory.md" in p for p in _search_paths(db, "bravo charlie delta")),
         )

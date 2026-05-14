@@ -86,12 +86,23 @@ Same shape, different file. Codex reads `~/.codex/mcp_servers.json`:
       "args": ["serve"],
       "env": {
         "TRANSCRIPT_JSONL_DIR": "~/.codex/sessions/",
-        "TRANSCRIPT_PERSONA": "your-persona"
+        "TRANSCRIPT_PERSONA": "your-persona",
+        "CHIMERA_CLIENT": "codex"
       }
     }
   }
 }
 ```
+
+Check the wiring without exposing raw environment values:
+
+```bash
+chimera-memory codex doctor
+```
+
+The doctor verifies that the Codex MCP config exists, the `chimera-memory`
+server entry is present, the command resolves, `serve` is passed, and the Codex
+parser is selected with `CHIMERA_CLIENT=codex`.
 
 ### Hermes Agent
 
@@ -336,6 +347,7 @@ chimera-memory backfill           # Index all historical sessions
 chimera-memory backfill --jsonl-dir <DIR> --persona <NAME> --client claude|codex
 chimera-memory stats              # Show database statistics
 chimera-memory split-db           # Split a shared transcript DB into per-persona DBs
+chimera-memory codex doctor       # Diagnose Codex MCP setup without printing env values
 ```
 
 `backfill` accepts `--client claude|codex` to use the right parser for the JSONL flavor (Claude Code and Codex CLI write structurally different JSONL).
@@ -354,7 +366,7 @@ Priority: **environment variables > config file > defaults**.
 | JSONL directory | `TRANSCRIPT_JSONL_DIR` | Auto-detected from CWD |
 | Memory root | `MEMORY_ROOT` | Auto-detected |
 | Persona name | `TRANSCRIPT_PERSONA` | — |
-| Client/parser | `TRANSCRIPT_CLIENT` | `claude` |
+| Client/parser | `CHIMERA_CLIENT` | Auto-detected / parser default |
 | Retention (days) | `TRANSCRIPT_RETENTION_DAYS` | 90 |
 | Max DB size (MB) | `TRANSCRIPT_MAX_DB_SIZE_MB` | 1024 |
 | OMP thread cap | `OMP_NUM_THREADS` | System default |
