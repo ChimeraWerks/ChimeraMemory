@@ -1,6 +1,6 @@
 # OB1 to ChimeraMemory Feature Comparison and Lift Plan
 
-**Status:** Research-phase deliverable, partial implementation in progress (Phase 0).
+**Status:** Research deliverable with implementation shipped through Phase 5c plus the Day 58 module split.
 
 **Last updated:** 2026-05-14 (Day 58)
 
@@ -8,7 +8,7 @@
 
 This document captures the comparative analysis between [OpenBrain (OB1)](https://github.com/NateBJones-Projects/OB1) and ChimeraMemory (CM), and the agreed upgrade path for CM that lifts OB1's best patterns while preserving CM's local-first architecture.
 
-The lift path was developed jointly across two days of pair-research between PersonifyAgents personas Sarah (researcher) and Asa (developer), with comparative AR cycles converging on a 12-item ordered roadmap. The full research transcript lives in the PersonifyAgents Discord workspace under `#planning`; this doc is the durable distillation.
+The lift path was developed jointly across two days of pair-research between PersonifyAgents personas Sarah (researcher) and Asa (developer), with comparative AR cycles converging on a 12-item ordered roadmap. The full research transcript lives in the PersonifyAgents Discord workspace under `#active-development`; this doc is the durable distillation.
 
 ## Core Decisions
 
@@ -110,12 +110,12 @@ The lift path was developed jointly across two days of pair-research between Per
 
 The lift items above are sequenced into six phases. Each phase ships independently, AR'd between Asa and Sarah, with backups at phase boundaries.
 
-- **Phase 0:** Small impact, easy changes. Codex MCP commands (shipped `chimera-memory codex doctor` Day 57, `chimera-memory codex template` Day 58 morning), SQLite hygiene (updated_at triggers, UNIQUE on idempotency_key, content_fingerprint helper, partial indexes), this comparison doc, baseline backup.
-- **Phase 1:** Sidecar architecture spec (no implementation). Design the memory-enhancement sidecar contract.
-- **Phase 2:** Observability spine. `recall_traces` + `recall_items` + `audit_events` SQLite tables, MCP tools to query.
-- **Phase 3:** Safety spine. Governance fields (provenance, confidence, lifecycle_status, review_status, sensitivity_tier, use-policy) on `memory_files` + YAML frontmatter extensions.
-- **Phase 4:** Writeback hygiene. content_fingerprint UNIQUE index, idempotency_key UNIQUE index, review-queue MCP tools.
-- **Phase 5:** Sidecar implementation + usability layer. Auto-enrichment via user-OAuth-token cheap-model sidecar, auto-capture protocol, live retrieval loop, dashboard surface in PA's PWA.
+- **Phase 0:** Small impact, easy changes. Codex MCP commands, SQLite hygiene, comparison docs, baseline backup. Shipped.
+- **Phase 1:** Sidecar architecture spec. Shipped.
+- **Phase 2:** Observability spine. `recall_traces` + `recall_items` + `audit_events` SQLite tables, MCP tools to query. Shipped.
+- **Phase 3:** Safety spine. Governance fields (provenance, confidence, lifecycle_status, review_status, sensitivity_tier, use-policy) on `memory_files` + YAML frontmatter extensions. Shipped.
+- **Phase 4:** Writeback hygiene. content_fingerprint UNIQUE index, idempotency_key UNIQUE index, review-queue MCP tools. Shipped.
+- **Phase 5:** Sidecar implementation + usability layer. Contract, queue, and deterministic dry-run worker shipped through Phase 5c. Real OAuth/model adapter, auto-capture protocol, live retrieval loop, and PA dashboard remain.
 - **Phase 6:** Expansion. Entity graph, typed relations, temporal validity, pyramid summaries, import pipelines, portable profile export.
 
 ## Memory-Enhancement Sidecar Design
