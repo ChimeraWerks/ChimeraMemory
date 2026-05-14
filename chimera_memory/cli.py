@@ -58,6 +58,24 @@ def main():
     sub_codex_template.add_argument("--personas-dir", default="", help="Optional personas directory")
     sub_codex_template.add_argument("--shared-root", default="", help="Optional shared memory/root directory")
 
+    # enhance: memory-enhancement queue and dry-run helpers
+    sub_enhance = subparsers.add_parser("enhance", help="Memory enhancement sidecar helpers")
+    enhance_subparsers = sub_enhance.add_subparsers(dest="enhance_command")
+    sub_enhance_plan = enhance_subparsers.add_parser("provider-plan", help="Show safe provider-resolution plan")
+    sub_enhance_plan.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    sub_enhance_enqueue = enhance_subparsers.add_parser("enqueue", help="Queue an indexed memory file for enhancement")
+    sub_enhance_enqueue.add_argument("--db", help="Path to transcript.db")
+    sub_enhance_enqueue.add_argument("--file", required=True, help="Indexed memory file path or relative path")
+    sub_enhance_enqueue.add_argument("--provider", default="", help="Requested provider hint")
+    sub_enhance_enqueue.add_argument("--model", default="", help="Requested model hint")
+    sub_enhance_enqueue.add_argument("--force", action="store_true", help="Supersede an existing pending/running job")
+    sub_enhance_enqueue.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    sub_enhance_dry_run = enhance_subparsers.add_parser("dry-run", help="Process queued jobs with deterministic local metadata")
+    sub_enhance_dry_run.add_argument("--db", help="Path to transcript.db")
+    sub_enhance_dry_run.add_argument("--persona", help="Only process jobs for this persona")
+    sub_enhance_dry_run.add_argument("--limit", type=int, default=10, help="Maximum jobs to process")
+    sub_enhance_dry_run.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+
     args = parser.parse_args()
 
     if args.command == "serve":
@@ -71,6 +89,8 @@ def main():
         _run_split_db(args)
     elif args.command == "codex":
         _run_codex(args)
+    elif args.command == "enhance":
+        _run_enhance(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -192,6 +212,106 @@ def _run_codex(args):
         return
 
     print("Missing Codex command. Try: chimera-memory codex doctor", file=sys.stderr)
+    sys.exit(2)
+
+
+def _open_memory_db(db_path: str | None):
+    import sqlite3
+
+    from .memory import init_memory_tables
+    from .server import get_default_db_path
+
+    path = db_path or str(get_default_db_path())
+    conn = sqlite3.connect(path)
+    init_memory_tables(conn)
+    return conn
+
+
+def _emit_json_or_lines(payload: object, *, json_output: bool, lines: list[str]) -> None:
+    if json_output:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    for line in lines:
+        print(line)
+
+
+def _run_enhance(args):
+    if args.enhance_command == "provider-plan":
+        import os
+
+        from .memory_enhancement_provider import resolve_enhancement_provider_plan, safe_provider_receipt
+
+        receipt = safe_provider_receipt(resolve_enhancement_provider_plan(os.environ))
+        selected = receipt["selected_provider"]
+        model = receipt["selected_model"]
+        _emit_json_or_lines(
+            receipt,
+            json_output=args.json,
+            lines=[
+                f"Selected provider: {selected}",
+                f"Selected model:    {model}",
+                "Credential refs:   hidden; only presence is reported in JSON mode",
+            ],
+        )
+        return
+
+    if args.enhance_command == "enqueue":
+        from .memory import memory_enhancement_enqueue
+
+        conn = _open_memory_db(args.db)
+        try:
+            result = memory_enhancement_enqueue(
+                conn,
+                file_path=args.file,
+                requested_provider=args.provider,
+                requested_model=args.model,
+                force=args.force,
+            )
+        finally:
+            conn.close()
+
+        if not result.get("ok"):
+            _emit_json_or_lines(
+                result,
+                json_output=args.json,
+                lines=[f"Enhancement enqueue failed: {result.get('error', 'unknown error')}"],
+            )
+            sys.exit(2)
+
+        job = result.get("job") or {}
+        action = "Enqueued" if result.get("enqueued") else "Already queued"
+        _emit_json_or_lines(
+            result,
+            json_output=args.json,
+            lines=[
+                f"{action} enhancement job: {job.get('job_id', '')}",
+                f"Status: {job.get('status', '')}",
+                f"Persona: {job.get('persona', '')}",
+            ],
+        )
+        return
+
+    if args.enhance_command == "dry-run":
+        from .enhancement_worker import run_memory_enhancement_dry_run
+
+        conn = _open_memory_db(args.db)
+        try:
+            processed = run_memory_enhancement_dry_run(conn, persona=args.persona, limit=args.limit)
+        finally:
+            conn.close()
+
+        payload = {
+            "processed_count": len(processed),
+            "processed": processed,
+        }
+        _emit_json_or_lines(
+            payload,
+            json_output=args.json,
+            lines=[f"Processed enhancement jobs: {len(processed)}"],
+        )
+        return
+
+    print("Missing enhance command. Try: chimera-memory enhance provider-plan", file=sys.stderr)
     sys.exit(2)
 
 
