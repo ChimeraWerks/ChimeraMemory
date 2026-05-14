@@ -711,6 +711,62 @@ def create_server():
         return "\n".join(lines)
 
     @server.tool()
+    def memory_recall_trace_query(
+        persona: str | None = None,
+        tool_name: str | None = None,
+        limit: int = 20,
+        include_items: bool = False,
+    ) -> str:
+        """Query recent memory recall traces and optional returned items."""
+        from .memory import memory_recall_trace_query as _trace_query
+        traces = _trace_query(
+            _get_memory_conn(),
+            persona=persona,
+            tool_name=tool_name,
+            limit=limit,
+            include_items=include_items,
+        )
+        if not traces:
+            return "No memory recall traces found."
+        lines = []
+        for trace in traces:
+            lines.append(
+                f"{trace['created_at']} | {trace['tool_name']} | {trace.get('persona') or '-'} | "
+                f"returned {trace['returned_count']}/{trace['requested_limit']} | {trace['trace_id']}"
+            )
+            lines.append(f"  query: {trace['query_text']}")
+            if include_items:
+                for item in trace.get("items", [])[:10]:
+                    score = item.get("similarity")
+                    score_text = f" score={score:.4f}" if isinstance(score, (int, float)) else ""
+                    lines.append(
+                        f"  #{item['rank']}{score_text} {item['relative_path']} ({item['persona']})"
+                    )
+            lines.append("")
+        return "\n".join(lines)
+
+    @server.tool()
+    def memory_audit_query(
+        event_type: str | None = None,
+        persona: str | None = None,
+        limit: int = 50,
+    ) -> str:
+        """Query recent memory audit events."""
+        from .memory import memory_audit_query as _audit_query
+        events = _audit_query(_get_memory_conn(), event_type=event_type, persona=persona, limit=limit)
+        if not events:
+            return "No memory audit events found."
+        lines = []
+        for event in events:
+            lines.append(
+                f"{event['created_at']} | {event['event_type']} | {event.get('persona') or '-'} | "
+                f"{event.get('target_kind') or '-'}:{event.get('target_id') or '-'}"
+            )
+            if event.get("trace_id"):
+                lines.append(f"  trace: {event['trace_id']}")
+        return "\n".join(lines)
+
+    @server.tool()
     def memory_gaps(persona: str | None = None) -> str:
         """Detect knowledge gaps using graph analysis. Finds disconnected clusters and isolated files."""
         _ensure_memory_indexed()
