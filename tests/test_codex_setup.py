@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 from chimera_memory.codex_setup import (
+    build_codex_mcp_config,
     format_codex_doctor_report,
     inspect_codex_mcp_config,
 )
@@ -102,3 +104,60 @@ def test_codex_doctor_warns_on_incomplete_identity(tmp_path: Path) -> None:
     assert report["status"] == "warning"
     assert "Persona identity env is incomplete." in text
     assert "CHIMERA_PERSONA_ID" in text
+
+
+def test_codex_template_builds_safe_config_without_secrets() -> None:
+    config = build_codex_mcp_config(
+        persona="asa",
+        jsonl_dir="~/.codex/sessions",
+        persona_id="developer/asa",
+        persona_name="asa",
+        persona_root="C:/Github/ChimeraAgency/personas/developer/asa",
+        personas_dir="C:/Github/ChimeraAgency/personas",
+        shared_root="C:/Github/ChimeraAgency/shared",
+    )
+    text = json.dumps(config)
+
+    server = config["mcpServers"]["chimera-memory"]
+    env = server["env"]
+
+    assert server["command"] == "chimera-memory"
+    assert server["args"] == ["serve"]
+    assert env["TRANSCRIPT_PERSONA"] == "asa"
+    assert env["CHIMERA_CLIENT"] == "codex"
+    assert env["CHIMERA_PERSONA_ID"] == "developer/asa"
+    assert "SECRET" not in text
+    assert "TOKEN" not in text
+
+
+def test_codex_template_requires_persona() -> None:
+    try:
+        build_codex_mcp_config(persona="")
+    except ValueError as exc:
+        assert "persona is required" in str(exc)
+    else:
+        raise AssertionError("empty persona should fail")
+
+
+def test_codex_template_cli_prints_json_without_shadowing_subcommand() -> None:
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "chimera_memory.cli",
+            "codex",
+            "template",
+            "--persona",
+            "asa",
+            "--command",
+            sys.executable,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(proc.stdout)
+    server = payload["mcpServers"]["chimera-memory"]
+
+    assert server["command"] == sys.executable
+    assert server["env"]["CHIMERA_CLIENT"] == "codex"

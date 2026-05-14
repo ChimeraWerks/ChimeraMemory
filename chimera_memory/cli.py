@@ -42,6 +42,21 @@ def main():
     sub_codex_doctor = codex_subparsers.add_parser("doctor", help="Check Codex MCP ChimeraMemory setup")
     sub_codex_doctor.add_argument("--config", help="Path to Codex mcp_servers.json")
     sub_codex_doctor.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    sub_codex_template = codex_subparsers.add_parser("template", help="Print a safe Codex MCP config template")
+    sub_codex_template.add_argument("--persona", required=True, help="Persona tag for indexed Codex transcripts")
+    sub_codex_template.add_argument("--jsonl-dir", default="~/.codex/sessions/", help="Codex JSONL sessions directory")
+    sub_codex_template.add_argument(
+        "--command",
+        dest="server_command",
+        default="chimera-memory",
+        help="Command Codex should spawn",
+    )
+    sub_codex_template.add_argument("--server-name", default="chimera-memory", help="MCP server name")
+    sub_codex_template.add_argument("--persona-id", default="", help="Optional stable persona id, e.g. developer/asa")
+    sub_codex_template.add_argument("--persona-name", default="", help="Optional display persona name")
+    sub_codex_template.add_argument("--persona-root", default="", help="Optional persona root directory")
+    sub_codex_template.add_argument("--personas-dir", default="", help="Optional personas directory")
+    sub_codex_template.add_argument("--shared-root", default="", help="Optional shared memory/root directory")
 
     args = parser.parse_args()
 
@@ -159,6 +174,22 @@ def _run_codex(args):
         if status == "warning":
             sys.exit(1)
         sys.exit(2)
+    if args.codex_command == "template":
+        from .codex_setup import build_codex_mcp_config
+
+        config = build_codex_mcp_config(
+            persona=args.persona,
+            jsonl_dir=args.jsonl_dir,
+            command=args.server_command,
+            server_name=args.server_name,
+            persona_id=args.persona_id,
+            persona_name=args.persona_name,
+            persona_root=args.persona_root,
+            personas_dir=args.personas_dir,
+            shared_root=args.shared_root,
+        )
+        print(json.dumps(config, indent=2))
+        return
 
     print("Missing Codex command. Try: chimera-memory codex doctor", file=sys.stderr)
     sys.exit(2)

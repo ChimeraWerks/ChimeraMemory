@@ -25,6 +25,61 @@ def default_codex_mcp_config_path() -> Path:
     return Path.home() / ".codex" / "mcp_servers.json"
 
 
+def build_codex_mcp_config(
+    *,
+    persona: str,
+    jsonl_dir: str = "~/.codex/sessions/",
+    command: str = "chimera-memory",
+    server_name: str = "chimera-memory",
+    persona_id: str = "",
+    persona_name: str = "",
+    persona_root: str = "",
+    personas_dir: str = "",
+    shared_root: str = "",
+) -> dict[str, Any]:
+    """Build a safe Codex MCP config template.
+
+    The template only contains paths and non-secret identity fields. It never
+    reads the user's current config and never emits raw credentials.
+    """
+    persona = persona.strip()
+    if not persona:
+        raise ValueError("persona is required")
+    command = command.strip()
+    if not command:
+        raise ValueError("command is required")
+    server_name = server_name.strip()
+    if not server_name:
+        raise ValueError("server_name is required")
+
+    env: dict[str, str] = {
+        "TRANSCRIPT_JSONL_DIR": jsonl_dir.strip() or "~/.codex/sessions/",
+        "TRANSCRIPT_PERSONA": persona,
+        "CHIMERA_CLIENT": "codex",
+    }
+    optional_env = {
+        "CHIMERA_PERSONA_ID": persona_id,
+        "CHIMERA_PERSONA_NAME": persona_name,
+        "CHIMERA_PERSONA_ROOT": persona_root,
+        "CHIMERA_PERSONAS_DIR": personas_dir,
+        "CHIMERA_SHARED_ROOT": shared_root,
+    }
+    for key, value in optional_env.items():
+        cleaned = value.strip()
+        if cleaned:
+            env[key] = cleaned
+
+    return {
+        "mcpServers": {
+            server_name: {
+                "command": command,
+                "args": ["serve"],
+                "env": env,
+            }
+        }
+    }
+
+
 def inspect_codex_mcp_config(config_path: str | Path | None = None) -> dict[str, Any]:
     """Inspect Codex MCP config without exposing raw environment values."""
     path = Path(config_path).expanduser() if config_path is not None else default_codex_mcp_config_path()

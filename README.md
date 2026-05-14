@@ -104,6 +104,28 @@ The doctor verifies that the Codex MCP config exists, the `chimera-memory`
 server entry is present, the command resolves, `serve` is passed, and the Codex
 parser is selected with `CHIMERA_CLIENT=codex`.
 
+Generate a safe config template without reading or modifying your live Codex
+config:
+
+```bash
+chimera-memory codex template --persona your-persona
+```
+
+Add identity fields when you want persona-scoped indexing:
+
+```bash
+chimera-memory codex template \
+  --persona asa \
+  --persona-id developer/asa \
+  --persona-name asa \
+  --persona-root C:/Github/ChimeraAgency/personas/developer/asa \
+  --personas-dir C:/Github/ChimeraAgency/personas \
+  --shared-root C:/Github/ChimeraAgency/shared
+```
+
+The template command prints JSON only. It does not write `mcp_servers.json` and
+does not include secrets or OAuth tokens.
+
 ### Hermes Agent
 
 Hermes supports two integration modes simultaneously:
