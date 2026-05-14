@@ -1,6 +1,7 @@
 # Memory Enhancement Sidecar
 
-Status: Phase 1 design spec. No implementation in this phase.
+Status: Phase 1 design spec plus Phase 5d provider-policy groundwork. The real
+OAuth/model adapter is not implemented yet.
 
 This document defines the planned sidecar that can enrich ChimeraMemory captures
 with structured metadata while preserving CM's local-first core. It lifts the
@@ -78,6 +79,80 @@ supervision, rate-limit accounting, and prompt-injection-safe wrapping.
   }
 }
 ```
+
+## Provider Policy Groundwork
+
+`chimera_memory/memory_enhancement_provider.py` defines the provider planning
+layer for the future sidecar runner. It does not call a model and does not read
+raw credentials.
+
+Default priority order:
+
+1. `openai` with model `gpt-4o-mini`
+2. `anthropic` with model `haiku-4.5`
+3. `ollama` with model `gemma2:2b`
+4. `dry_run` with model `deterministic-local`
+
+The order can be overridden with:
+
+```text
+CHIMERA_MEMORY_ENHANCEMENT_PROVIDER_ORDER=openai,anthropic,ollama,dry_run
+```
+
+Cloud providers become available only when a credential reference is configured.
+Credential references are names, not token values. Accepted forms are:
+
+```text
+oauth:openai-memory
+secret:memory-sidecar-openai
+env:CHIMERA_MEMORY_OPENAI_TOKEN_REF
+```
+
+Configured keys:
+
+```text
+CHIMERA_MEMORY_ENHANCEMENT_OPENAI_CREDENTIAL_REF
+CHIMERA_MEMORY_ENHANCEMENT_ANTHROPIC_CREDENTIAL_REF
+CHIMERA_MEMORY_ENHANCEMENT_OPENAI_MODEL
+CHIMERA_MEMORY_ENHANCEMENT_ANTHROPIC_MODEL
+CHIMERA_MEMORY_ENHANCEMENT_OLLAMA_MODEL
+CHIMERA_MEMORY_ENHANCEMENT_ENABLE_LOCAL_MODEL
+CHIMERA_MEMORY_ENHANCEMENT_OLLAMA_ENDPOINT
+CHIMERA_MEMORY_ENHANCEMENT_MAX_INPUT_TOKENS
+CHIMERA_MEMORY_ENHANCEMENT_MAX_INPUT_CHARS
+CHIMERA_MEMORY_ENHANCEMENT_MAX_OUTPUT_TOKENS
+CHIMERA_MEMORY_ENHANCEMENT_MAX_JOBS_PER_RUN
+CHIMERA_MEMORY_ENHANCEMENT_PER_MINUTE_CALL_CAP
+CHIMERA_MEMORY_ENHANCEMENT_DAILY_SOFT_CALL_CAP
+CHIMERA_MEMORY_ENHANCEMENT_MONTHLY_HARD_CALL_CAP
+CHIMERA_MEMORY_ENHANCEMENT_TIMEOUT_SECONDS
+```
+
+Default budget caps:
+
+- `500` input tokens, represented as `2000` input characters for the current
+  policy-only clamp
+- `200` output tokens
+- `10` jobs per run
+- `30` calls per minute
+- `5000` calls per day soft cap
+- `100000` calls per month hard cap
+- `30` second timeout
+
+Bounded failure categories:
+
+- `auth_error`
+- `model_unavailable`
+- `rate_limit`
+- `timeout`
+- `parse_error`
+- `content_filter`
+- `quota_exceeded`
+- `unknown_error`
+
+Provider receipts intentionally expose only whether a credential reference is
+present. They do not include credential reference values and never include raw
+credential material.
 
 ### Response
 
@@ -244,4 +319,3 @@ Implementation waits until:
 
 That order prevents generated metadata from landing before CM has the review,
 audit, provenance, and sensitivity surfaces needed to govern it.
-

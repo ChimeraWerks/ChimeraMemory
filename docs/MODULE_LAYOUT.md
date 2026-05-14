@@ -93,6 +93,25 @@ Rules:
 - Treat captured content as untrusted input.
 - Validate sidecar output before queue completion or writeback.
 
+### `memory_enhancement_provider.py`
+
+Owns provider policy for future memory-enhancement sidecar calls:
+
+- provider priority order
+- credential-reference validation
+- model defaults
+- budget caps
+- safe invocation envelope
+- bounded failure categories
+- safe provider receipts
+
+Rules:
+
+- No network calls here.
+- No raw OAuth token or bearer token values here.
+- Credential references are names such as `oauth:openai-memory`, not credentials.
+- This module may import the sidecar contract, but not queue/review/schema/facade modules.
+
 ### `memory_enhancement_queue.py`
 
 Owns enhancement job persistence:
@@ -137,6 +156,9 @@ memory_enhancement_queue.py
   imports memory_observability.py
   imports memory_enhancement.py
 
+memory_enhancement_provider.py
+  imports memory_enhancement.py
+
 memory_review.py
   imports memory_observability.py
 
@@ -156,6 +178,7 @@ Avoid:
 - schema importing queue/review/observability behavior
 - review and queue importing each other
 - model/OAuth code inside the queue module
+- raw credential values in provider policy or safe receipts
 
 ## Test Map
 
@@ -164,6 +187,7 @@ Avoid:
 - Observability: `tests/test_memory_observability.py`
 - Review: `tests/test_memory_review.py`
 - Sidecar contract: `tests/test_memory_enhancement.py`
+- Provider policy: `tests/test_memory_enhancement_provider.py`
 - Enhancement queue: `tests/test_memory_enhancement_queue.py`
 - Dry-run worker: `tests/test_memory_enhancement_worker.py`
 
