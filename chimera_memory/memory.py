@@ -31,6 +31,18 @@ MIN_IMPORTANCE_ACTIVE = 3
 MIN_IMPORTANCE_STALE = 1
 CONSOLIDATION_AGE_DAYS = 7
 
+PROVENANCE_STATUSES = {
+    "observed", "inferred", "user_confirmed", "imported",
+    "generated", "superseded", "disputed",
+}
+LIFECYCLE_STATUSES = {"active", "stale", "archived", "superseded", "disputed", "rejected"}
+REVIEW_STATUSES = {
+    "pending", "confirmed", "evidence_only", "restricted",
+    "rejected", "stale", "merged",
+}
+SENSITIVITY_TIERS = {"standard", "restricted", "unknown"}
+INSTRUCTION_GRADE_PROVENANCE = {"user_confirmed", "imported"}
+
 # ─── Schema ──────────────────────────────────────────────────────────
 
 MEMORY_SCHEMA = """
@@ -56,7 +68,15 @@ CREATE TABLE IF NOT EXISTS memory_files (
     fm_failure_count INTEGER DEFAULT 0,
     idempotency_key TEXT,
     content_fingerprint TEXT,
-    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    fm_provenance_status TEXT DEFAULT 'imported',
+    fm_confidence REAL,
+    fm_lifecycle_status TEXT DEFAULT 'active',
+    fm_review_status TEXT DEFAULT 'confirmed',
+    fm_sensitivity_tier TEXT DEFAULT 'standard',
+    fm_can_use_as_instruction INTEGER DEFAULT 1,
+    fm_can_use_as_evidence INTEGER DEFAULT 1,
+    fm_requires_user_confirmation INTEGER DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_mf_persona ON memory_files(persona);
@@ -99,6 +119,19 @@ CREATE INDEX IF NOT EXISTS idx_mf_active_type_importance
 ON memory_files(fm_type, fm_importance DESC)
 WHERE fm_status = 'active';
 
+CREATE INDEX IF NOT EXISTS idx_mf_provenance_status
+ON memory_files(fm_provenance_status);
+
+CREATE INDEX IF NOT EXISTS idx_mf_review_status
+ON memory_files(fm_review_status);
+
+CREATE INDEX IF NOT EXISTS idx_mf_sensitivity_tier
+ON memory_files(fm_sensitivity_tier);
+
+CREATE INDEX IF NOT EXISTS idx_mf_instruction_use
+ON memory_files(fm_can_use_as_instruction)
+WHERE fm_can_use_as_instruction = 1;
+
 CREATE TRIGGER IF NOT EXISTS memory_files_ai_updated_at
 AFTER INSERT ON memory_files
 WHEN NEW.updated_at IS NULL
@@ -114,7 +147,10 @@ AFTER UPDATE OF
     fm_type, fm_importance, fm_created, fm_last_accessed,
     fm_access_count, fm_status, fm_about, fm_tags, fm_entity,
     fm_relationship_temperature, fm_trust_level, fm_trend,
-    fm_failure_count, idempotency_key, content_fingerprint
+    fm_failure_count, idempotency_key, content_fingerprint,
+    fm_provenance_status, fm_confidence, fm_lifecycle_status,
+    fm_review_status, fm_sensitivity_tier, fm_can_use_as_instruction,
+    fm_can_use_as_evidence, fm_requires_user_confirmation
 ON memory_files
 BEGIN
     UPDATE memory_files
@@ -238,11 +274,36 @@ def _migrate_memory_files_schema(conn: sqlite3.Connection) -> None:
     _ensure_memory_file_column(conn, columns, "idempotency_key", "idempotency_key TEXT")
     _ensure_memory_file_column(conn, columns, "content_fingerprint", "content_fingerprint TEXT")
     _ensure_memory_file_column(conn, columns, "updated_at", "updated_at TEXT")
+    _ensure_memory_file_column(conn, columns, "fm_provenance_status", "fm_provenance_status TEXT")
+    _ensure_memory_file_column(conn, columns, "fm_confidence", "fm_confidence REAL")
+    _ensure_memory_file_column(conn, columns, "fm_lifecycle_status", "fm_lifecycle_status TEXT")
+    _ensure_memory_file_column(conn, columns, "fm_review_status", "fm_review_status TEXT")
+    _ensure_memory_file_column(conn, columns, "fm_sensitivity_tier", "fm_sensitivity_tier TEXT")
+    _ensure_memory_file_column(conn, columns, "fm_can_use_as_instruction", "fm_can_use_as_instruction INTEGER")
+    _ensure_memory_file_column(conn, columns, "fm_can_use_as_evidence", "fm_can_use_as_evidence INTEGER")
+    _ensure_memory_file_column(
+        conn,
+        columns,
+        "fm_requires_user_confirmation",
+        "fm_requires_user_confirmation INTEGER",
+    )
     conn.execute(
         """
         UPDATE memory_files
            SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
          WHERE updated_at IS NULL
+        """
+    )
+    conn.execute(
+        """
+        UPDATE memory_files
+           SET fm_provenance_status = COALESCE(fm_provenance_status, 'imported'),
+               fm_lifecycle_status = COALESCE(fm_lifecycle_status, COALESCE(fm_status, 'active')),
+               fm_review_status = COALESCE(fm_review_status, 'confirmed'),
+               fm_sensitivity_tier = COALESCE(fm_sensitivity_tier, 'standard'),
+               fm_can_use_as_instruction = COALESCE(fm_can_use_as_instruction, 1),
+               fm_can_use_as_evidence = COALESCE(fm_can_use_as_evidence, 1),
+               fm_requires_user_confirmation = COALESCE(fm_requires_user_confirmation, 0)
         """
     )
 
@@ -254,6 +315,69 @@ def normalized_content_fingerprint(text: str) -> str:
     """Return OB1-style normalized SHA256 for duplicate-content detection."""
     normalized = _FINGERPRINT_WHITESPACE_RE.sub(" ", text.strip().lower())
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _choice(value: object, allowed: set[str], default: str) -> str:
+    text = str(value or "").strip()
+    return text if text in allowed else default
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(1.0, parsed))
+
+
+def _bool_int(value: object, default: bool) -> int:
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if value is None:
+        return 1 if default else 0
+    if isinstance(value, (int, float)):
+        return 1 if value else 0
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return 1
+    if text in {"0", "false", "no", "n", "off"}:
+        return 0
+    return 1 if default else 0
+
+
+def governance_from_frontmatter(fm: dict) -> dict:
+    """Normalize OB1-inspired governance metadata from YAML frontmatter."""
+    provenance = _choice(fm.get("provenance_status"), PROVENANCE_STATUSES, "imported")
+    lifecycle = _choice(
+        fm.get("lifecycle_status"),
+        LIFECYCLE_STATUSES,
+        _choice(fm.get("status"), LIFECYCLE_STATUSES, "active"),
+    )
+    review_default = "confirmed" if provenance in INSTRUCTION_GRADE_PROVENANCE else "pending"
+    review = _choice(fm.get("review_status"), REVIEW_STATUSES, review_default)
+    sensitivity = _choice(fm.get("sensitivity_tier"), SENSITIVITY_TIERS, "standard")
+
+    instruction_default = provenance in INSTRUCTION_GRADE_PROVENANCE
+    can_use_as_instruction = _bool_int(fm.get("can_use_as_instruction"), instruction_default)
+    if provenance not in INSTRUCTION_GRADE_PROVENANCE:
+        can_use_as_instruction = 0
+
+    requires_default = provenance not in INSTRUCTION_GRADE_PROVENANCE
+    return {
+        "provenance_status": provenance,
+        "confidence": _optional_float(fm.get("confidence")),
+        "lifecycle_status": lifecycle,
+        "review_status": review,
+        "sensitivity_tier": sensitivity,
+        "can_use_as_instruction": can_use_as_instruction,
+        "can_use_as_evidence": _bool_int(fm.get("can_use_as_evidence"), True),
+        "requires_user_confirmation": _bool_int(
+            fm.get("requires_user_confirmation"),
+            requires_default,
+        ),
+    }
 
 
 def _json_text(value: object) -> str:
@@ -700,6 +824,7 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
 
     fm, body = parse_frontmatter(content)
     tags_json = json.dumps(fm.get("tags", []))
+    governance = governance_from_frontmatter(fm)
     now = time.time()
 
     if row:
@@ -711,7 +836,11 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
                 fm_type=?, fm_importance=?, fm_created=?, fm_last_accessed=?,
                 fm_access_count=?, fm_status=?, fm_about=?, fm_tags=?,
                 fm_entity=?, fm_relationship_temperature=?, fm_trust_level=?,
-                fm_trend=?, fm_failure_count=?, content_fingerprint=?
+                fm_trend=?, fm_failure_count=?, content_fingerprint=?,
+                fm_provenance_status=?, fm_confidence=?, fm_lifecycle_status=?,
+                fm_review_status=?, fm_sensitivity_tier=?,
+                fm_can_use_as_instruction=?, fm_can_use_as_evidence=?,
+                fm_requires_user_confirmation=?
             WHERE id=?
         """, (
             content_hash, now,
@@ -721,6 +850,10 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
             fm.get("entity"), fm.get("relationship_temperature"),
             fm.get("trust_level"), fm.get("trend"),
             fm.get("failure_count", 0), content_fingerprint,
+            governance["provenance_status"], governance["confidence"],
+            governance["lifecycle_status"], governance["review_status"],
+            governance["sensitivity_tier"], governance["can_use_as_instruction"],
+            governance["can_use_as_evidence"], governance["requires_user_confirmation"],
             file_id
         ))
     else:
@@ -730,8 +863,12 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
                 fm_type, fm_importance, fm_created, fm_last_accessed,
                 fm_access_count, fm_status, fm_about, fm_tags,
                 fm_entity, fm_relationship_temperature, fm_trust_level,
-                fm_trend, fm_failure_count, content_fingerprint
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                fm_trend, fm_failure_count, content_fingerprint,
+                fm_provenance_status, fm_confidence, fm_lifecycle_status,
+                fm_review_status, fm_sensitivity_tier,
+                fm_can_use_as_instruction, fm_can_use_as_evidence,
+                fm_requires_user_confirmation
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             path_str, persona, relative_path, content_hash, now,
             fm.get("type"), fm.get("importance"), fm.get("created"),
@@ -740,6 +877,10 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
             fm.get("entity"), fm.get("relationship_temperature"),
             fm.get("trust_level"), fm.get("trend"),
             fm.get("failure_count", 0), content_fingerprint,
+            governance["provenance_status"], governance["confidence"],
+            governance["lifecycle_status"], governance["review_status"],
+            governance["sensitivity_tier"], governance["can_use_as_instruction"],
+            governance["can_use_as_evidence"], governance["requires_user_confirmation"],
         ))
         file_id = cursor.lastrowid
 
@@ -926,7 +1067,11 @@ def memory_query(
         SELECT path, persona, relative_path, fm_type, fm_importance,
                fm_created, fm_last_accessed, fm_access_count, fm_status,
                fm_about, fm_tags, fm_entity, fm_relationship_temperature,
-               fm_trust_level, fm_trend, fm_failure_count
+               fm_trust_level, fm_trend, fm_failure_count,
+               fm_provenance_status, fm_confidence, fm_lifecycle_status,
+               fm_review_status, fm_sensitivity_tier,
+               fm_can_use_as_instruction, fm_can_use_as_evidence,
+               fm_requires_user_confirmation
         FROM memory_files WHERE {where}
         ORDER BY {sort_col} {order} NULLS LAST LIMIT ?
     """, params + [limit]).fetchall()
@@ -937,7 +1082,12 @@ def memory_query(
          "access_count": r[7], "status": r[8], "about": r[9],
          "tags": json.loads(r[10]) if r[10] else [], "entity": r[11],
          "relationship_temperature": r[12], "trust_level": r[13],
-         "trend": r[14], "failure_count": r[15]}
+         "trend": r[14], "failure_count": r[15],
+         "provenance_status": r[16], "confidence": r[17],
+         "lifecycle_status": r[18], "review_status": r[19],
+         "sensitivity_tier": r[20], "can_use_as_instruction": bool(r[21]),
+         "can_use_as_evidence": bool(r[22]),
+         "requires_user_confirmation": bool(r[23])}
         for r in rows
     ]
 

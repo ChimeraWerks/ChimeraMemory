@@ -62,7 +62,19 @@ def test_init_memory_tables_migrates_legacy_memory_files_schema() -> None:
     init_memory_tables(conn)
 
     columns = _columns(conn)
-    assert {"idempotency_key", "content_fingerprint", "updated_at"} <= columns
+    assert {
+        "idempotency_key",
+        "content_fingerprint",
+        "updated_at",
+        "fm_provenance_status",
+        "fm_confidence",
+        "fm_lifecycle_status",
+        "fm_review_status",
+        "fm_sensitivity_tier",
+        "fm_can_use_as_instruction",
+        "fm_can_use_as_evidence",
+        "fm_requires_user_confirmation",
+    } <= columns
 
     row = conn.execute("SELECT updated_at FROM memory_files WHERE path = ?", ("C:/tmp/memory.md",)).fetchone()
     assert row is not None
@@ -73,6 +85,10 @@ def test_init_memory_tables_migrates_legacy_memory_files_schema() -> None:
     assert "idx_mf_content_fingerprint" in indexes
     assert "idx_mf_active_persona_importance" in indexes
     assert "idx_mf_active_type_importance" in indexes
+    assert "idx_mf_provenance_status" in indexes
+    assert "idx_mf_review_status" in indexes
+    assert "idx_mf_sensitivity_tier" in indexes
+    assert "idx_mf_instruction_use" in indexes
 
 
 def test_index_file_writes_content_fingerprint_and_updates_timestamp(tmp_path: Path) -> None:
