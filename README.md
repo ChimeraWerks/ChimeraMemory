@@ -370,11 +370,21 @@ chimera-memory backfill --jsonl-dir <DIR> --persona <NAME> --client claude|codex
 chimera-memory stats              # Show database statistics
 chimera-memory split-db           # Split a shared transcript DB into per-persona DBs
 chimera-memory codex doctor       # Diagnose Codex MCP setup without printing env values
+chimera-memory enhance provider-plan --json
+chimera-memory enhance enqueue --file <MEMORY_PATH>
+chimera-memory enhance dry-run --persona <NAME>
 ```
 
 `backfill` accepts `--client claude|codex` to use the right parser for the JSONL flavor (Claude Code and Codex CLI write structurally different JSONL).
 
 `split-db` is for splitting a multi-persona DB after the fact, useful if you started with one shared DB and want per-persona isolation.
+
+`enhance` commands exercise the memory-enhancement sidecar pipeline without
+requiring a model call. `provider-plan` shows the selected provider and budget
+caps with credential refs hidden. `enqueue` queues an indexed memory file for
+metadata enrichment. `dry-run` consumes queued jobs with deterministic local
+metadata and keeps generated output review-gated: evidence-only, pending review,
+not instruction-grade.
 
 ## Configuration
 
