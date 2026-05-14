@@ -52,7 +52,10 @@ CREATE TABLE IF NOT EXISTS memory_files (
     fm_relationship_temperature REAL,
     fm_trust_level REAL,
     fm_trend TEXT,
-    fm_failure_count INTEGER DEFAULT 0
+    fm_failure_count INTEGER DEFAULT 0,
+    idempotency_key TEXT,
+    content_fingerprint TEXT,
+    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_mf_persona ON memory_files(persona);
@@ -78,11 +81,106 @@ CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
 );
 """
 
+MEMORY_POST_MIGRATION_SCHEMA = """
+CREATE UNIQUE INDEX IF NOT EXISTS idx_mf_idempotency_key
+ON memory_files(idempotency_key)
+WHERE idempotency_key IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_mf_content_fingerprint
+ON memory_files(content_fingerprint)
+WHERE content_fingerprint IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_mf_active_persona_importance
+ON memory_files(persona, fm_importance DESC)
+WHERE fm_status = 'active';
+
+CREATE INDEX IF NOT EXISTS idx_mf_active_type_importance
+ON memory_files(fm_type, fm_importance DESC)
+WHERE fm_status = 'active';
+
+CREATE TRIGGER IF NOT EXISTS memory_files_ai_updated_at
+AFTER INSERT ON memory_files
+WHEN NEW.updated_at IS NULL
+BEGIN
+    UPDATE memory_files
+       SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_files_au_updated_at
+AFTER UPDATE OF
+    path, persona, relative_path, content_hash, indexed_at,
+    fm_type, fm_importance, fm_created, fm_last_accessed,
+    fm_access_count, fm_status, fm_about, fm_tags, fm_entity,
+    fm_relationship_temperature, fm_trust_level, fm_trend,
+    fm_failure_count, idempotency_key, content_fingerprint
+ON memory_files
+BEGIN
+    UPDATE memory_files
+       SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE id = NEW.id;
+END;
+"""
+
 
 def init_memory_tables(conn: sqlite3.Connection):
     """Create memory tables if they don't exist."""
+    _check_memory_schema_prereqs(conn)
     conn.executescript(MEMORY_SCHEMA)
+    _migrate_memory_files_schema(conn)
+    conn.executescript(MEMORY_POST_MIGRATION_SCHEMA)
     conn.commit()
+
+
+def _check_memory_schema_prereqs(conn: sqlite3.Connection) -> None:
+    if sqlite3.sqlite_version_info < (3, 9, 0):
+        version = ".".join(str(part) for part in sqlite3.sqlite_version_info)
+        raise RuntimeError(f"SQLite 3.9.0+ with FTS5 support is required, found {version}")
+    try:
+        conn.execute("DROP TABLE IF EXISTS temp.chimera_memory_fts5_check")
+        conn.execute("CREATE VIRTUAL TABLE temp.chimera_memory_fts5_check USING fts5(content)")
+        conn.execute("DROP TABLE IF EXISTS temp.chimera_memory_fts5_check")
+    except sqlite3.Error as exc:
+        raise RuntimeError("SQLite FTS5 support is required for ChimeraMemory") from exc
+
+
+def _memory_file_columns(conn: sqlite3.Connection) -> set[str]:
+    return {str(row[1]) for row in conn.execute("PRAGMA table_info(memory_files)").fetchall()}
+
+
+def _ensure_memory_file_column(
+    conn: sqlite3.Connection,
+    columns: set[str],
+    name: str,
+    column_sql: str,
+) -> None:
+    if name in columns:
+        return
+    conn.execute(f"ALTER TABLE memory_files ADD COLUMN {column_sql}")
+    columns.add(name)
+
+
+def _migrate_memory_files_schema(conn: sqlite3.Connection) -> None:
+    columns = _memory_file_columns(conn)
+    _ensure_memory_file_column(conn, columns, "idempotency_key", "idempotency_key TEXT")
+    _ensure_memory_file_column(conn, columns, "content_fingerprint", "content_fingerprint TEXT")
+    _ensure_memory_file_column(conn, columns, "updated_at", "updated_at TEXT")
+    conn.execute(
+        """
+        UPDATE memory_files
+           SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+         WHERE updated_at IS NULL
+        """
+    )
+
+
+_FINGERPRINT_WHITESPACE_RE = re.compile(r"\s+")
+
+
+def normalized_content_fingerprint(text: str) -> str:
+    """Return OB1-style normalized SHA256 for duplicate-content detection."""
+    normalized = _FINGERPRINT_WHITESPACE_RE.sub(" ", text.strip().lower())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 # ─── FTS Normalization ───────────────────────────────────────────────
@@ -238,6 +336,7 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
         return False
 
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+    content_fingerprint = normalized_content_fingerprint(content)
     path_str = str(full_path).replace("\\", "/")
 
     row = conn.execute(
@@ -260,7 +359,7 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
                 fm_type=?, fm_importance=?, fm_created=?, fm_last_accessed=?,
                 fm_access_count=?, fm_status=?, fm_about=?, fm_tags=?,
                 fm_entity=?, fm_relationship_temperature=?, fm_trust_level=?,
-                fm_trend=?, fm_failure_count=?
+                fm_trend=?, fm_failure_count=?, content_fingerprint=?
             WHERE id=?
         """, (
             content_hash, now,
@@ -269,7 +368,7 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
             fm.get("status", "active"), fm.get("about"), tags_json,
             fm.get("entity"), fm.get("relationship_temperature"),
             fm.get("trust_level"), fm.get("trend"),
-            fm.get("failure_count", 0),
+            fm.get("failure_count", 0), content_fingerprint,
             file_id
         ))
     else:
@@ -279,8 +378,8 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
                 fm_type, fm_importance, fm_created, fm_last_accessed,
                 fm_access_count, fm_status, fm_about, fm_tags,
                 fm_entity, fm_relationship_temperature, fm_trust_level,
-                fm_trend, fm_failure_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                fm_trend, fm_failure_count, content_fingerprint
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             path_str, persona, relative_path, content_hash, now,
             fm.get("type"), fm.get("importance"), fm.get("created"),
@@ -288,7 +387,7 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
             fm.get("status", "active"), fm.get("about"), tags_json,
             fm.get("entity"), fm.get("relationship_temperature"),
             fm.get("trust_level"), fm.get("trend"),
-            fm.get("failure_count", 0),
+            fm.get("failure_count", 0), content_fingerprint,
         ))
         file_id = cursor.lastrowid
 
