@@ -817,6 +817,61 @@ def create_server():
         )
 
     @server.tool()
+    def memory_auto_capture_session_close(
+        title: str = "",
+        summary: str = "",
+        act_now: str = "",
+        session_text: str = "",
+        source_session_id: str = "",
+        persona: str | None = None,
+        write: bool = False,
+    ) -> str:
+        """Plan or write an evidence-only session-close memory with ACT NOW items."""
+        _ensure_memory_indexed()
+        from .memory import memory_auto_capture_session_close as _auto_capture
+
+        selected_persona = (persona or os.environ.get("TRANSCRIPT_PERSONA") or "").strip()
+        personas_dir = Path(os.environ.get("CHIMERA_PERSONAS_DIR", "C:/Github/ChimeraPersonas/personas"))
+        result = _auto_capture(
+            _get_memory_conn(),
+            personas_dir,
+            persona=selected_persona,
+            title=title,
+            summary=summary,
+            session_text=session_text,
+            act_now_text=act_now,
+            source_session_id=source_session_id,
+            write=write,
+            actor="mcp",
+        )
+        if not result.get("ok"):
+            return f"Auto-capture failed: {result.get('error', 'unknown error')}"
+
+        if result.get("written"):
+            return (
+                f"Auto-captured session close to {result['relative_path']} "
+                f"({selected_persona}). actions={len(result.get('action_items', []))} "
+                "review=pending instruction=false"
+            )
+
+        plan = result.get("plan") or {}
+        lines = [
+            "Auto-capture preview only. Re-run with write=true to persist.",
+            f"persona: {selected_persona}",
+            f"target: {plan.get('relative_path', '')}",
+            f"actions: {len(plan.get('action_items', []))}",
+        ]
+        if plan.get("action_items"):
+            lines.append("")
+            lines.append("ACT NOW:")
+            for item in plan["action_items"][:10]:
+                lines.append(f"- {item}")
+        if plan.get("guard_findings"):
+            lines.append("")
+            lines.append(f"guard_findings: {plan['guard_findings']}")
+        return "\n".join(lines)
+
+    @server.tool()
     def memory_entity_index(persona: str | None = None, limit: int | None = None) -> str:
         """Build the local entity graph from indexed memory frontmatter."""
         _ensure_memory_indexed()

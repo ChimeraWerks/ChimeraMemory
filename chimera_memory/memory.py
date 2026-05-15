@@ -52,6 +52,7 @@ from .memory_observability import (
     record_memory_audit_event,
     record_memory_recall_trace,
 )
+from .memory_auto_capture import build_auto_capture_plan, write_auto_capture_file
 from .memory_review import REVIEW_ACTIONS, memory_review_action, memory_review_pending
 from .memory_schema import init_memory_tables
 
@@ -697,6 +698,98 @@ def mark_failure(conn: sqlite3.Connection, file_path: str) -> bool:
     conn.execute("UPDATE memory_files SET fm_failure_count = ? WHERE id = ?", (new_count, row[0]))
     conn.commit()
     return True
+
+
+def memory_auto_capture_session_close(
+    conn: sqlite3.Connection,
+    personas_dir: Path,
+    *,
+    persona: str,
+    title: str = "",
+    summary: str = "",
+    session_text: str = "",
+    act_now_text: str = "",
+    source_session_id: str = "",
+    write: bool = False,
+    actor: str = "agent",
+) -> dict:
+    """Plan or write a governed session-close capture memory."""
+    plan = build_auto_capture_plan(
+        persona=persona,
+        title=title,
+        summary=summary,
+        session_text=session_text,
+        act_now_text=act_now_text,
+        source_session_id=source_session_id,
+    )
+    if not plan.get("ok"):
+        return plan
+
+    audit_payload = {
+        "schema_version": plan["schema_version"],
+        "capture_id": plan["capture_id"],
+        "relative_path": plan["relative_path"],
+        "action_item_count": len(plan.get("action_items", [])),
+        "guard_findings": plan.get("guard_findings", []),
+        "write": bool(write),
+    }
+
+    if not write:
+        record_memory_audit_event(
+            conn,
+            "memory_auto_capture_planned",
+            persona=persona,
+            target_kind="auto_capture",
+            target_id=plan["capture_id"],
+            payload=audit_payload,
+            actor=actor,
+        )
+        preview = {key: value for key, value in plan.items() if key != "body"}
+        preview["body_preview"] = plan["body"][:1200]
+        return {"ok": True, "written": False, "plan": preview}
+
+    write_result = write_auto_capture_file(personas_dir, plan)
+    if not write_result.get("ok"):
+        return write_result
+
+    full_path = Path(write_result["path"])
+    relative_path = write_result["relative_path"]
+    indexed = index_file(conn, persona, relative_path, full_path)
+    row = conn.execute(
+        "SELECT id FROM memory_files WHERE path = ?",
+        (str(full_path).replace("\\", "/"),),
+    ).fetchone()
+    file_id = row[0] if row else None
+    audit_payload.update(
+        {
+            "relative_path": relative_path,
+            "path": str(full_path).replace("\\", "/"),
+            "indexed": indexed,
+            "file_id": file_id,
+        }
+    )
+    record_memory_audit_event(
+        conn,
+        "memory_auto_capture_written",
+        persona=persona,
+        target_kind="memory_file",
+        target_id=str(file_id or relative_path),
+        payload=audit_payload,
+        actor=actor,
+        commit=False,
+    )
+    conn.commit()
+    return {
+        "ok": True,
+        "written": True,
+        "path": str(full_path),
+        "relative_path": relative_path,
+        "file_id": file_id,
+        "indexed": indexed,
+        "capture_id": plan["capture_id"],
+        "action_items": plan.get("action_items", []),
+        "guard_findings": plan.get("guard_findings", []),
+    }
 
 
 # â”€â”€â”€ Live File Watcher â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

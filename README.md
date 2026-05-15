@@ -247,6 +247,7 @@ Each PA apply writes a backup, a receipt, and updates the install-state ledger .
 | `memory_audit_query` | Inspect memory audit events such as recall, review, and enhancement operations. |
 | `memory_review_pending` | List generated or restricted memories that need review before instructional use. |
 | `memory_review_action` | Confirm, restrict, reject, stale, merge, dispute, or supersede a memory review item. |
+| `memory_auto_capture_session_close` | Plan or write an evidence-only session-close memory with ACT NOW items. |
 | `memory_enhancement_provider_plan` | Show the selected enhancement provider and budget caps without exposing credential refs. |
 | `memory_enhancement_enqueue` | Queue an indexed memory file for metadata enrichment. |
 | `memory_enhancement_dry_run` | Process queued enhancement jobs with deterministic local metadata. No model call required. |

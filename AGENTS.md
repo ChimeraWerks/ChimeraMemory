@@ -22,7 +22,7 @@ Two consumers matter:
 
 ## Current OB1 Lift Status
 
-The OB1-inspired lift is implemented through Phase 5e dashboard plus a first Phase 6 entity-graph slice:
+The OB1-inspired lift is implemented through Phase 5e dashboard and auto-capture plus a first Phase 6 entity-graph slice:
 
 - Phase 0: SQLite hygiene, content fingerprinting, idempotency, partial indexes, Codex commands, comparison docs.
 - Phase 1: memory-enhancement sidecar spec.
@@ -31,13 +31,14 @@ The OB1-inspired lift is implemented through Phase 5e dashboard plus a first Pha
 - Phase 4: review queue tools.
 - Phase 5a-c: sidecar contract, enhancement job queue, deterministic dry-run worker.
 - Phase 5d groundwork: provider priority, credential-reference boundary, budget caps, safe invocation envelope, bounded failure categories, and injected-client runner boundary.
+- Phase 5e usability: PWA memory dashboard and session-close auto-capture protocol.
 - Phase 6 partial: local entity graph schema, frontmatter/enhancement-derived entity indexing, shared-file connection queries, typed entity-edge query/upsert helpers.
 - Refactor: `memory.py` split into focused schema, governance, observability, review, enhancement queue, and frontmatter modules.
 
 Pending larger work:
 
 - Phase 5d remaining: real OAuth/model adapter for memory enhancement.
-- Phase 5e remaining: auto-capture protocol, live retrieval loop.
+- Phase 5e remaining: live retrieval loop.
 - Phase 6 remaining: richer typed relations, temporal-validity workflows, pyramid summaries, import pipelines, portable profile export.
 
 See `docs/OB1_COMPARISON.md`, `docs/MEMORY_ENHANCEMENT_SIDECAR.md`, and `docs/MODULE_LAYOUT.md`.
@@ -51,6 +52,7 @@ Do not use `memory.py` as a dumping ground. It is now the facade/orchestration l
 - `chimera_memory/memory_governance.py`: provenance/lifecycle/review/sensitivity constants, frontmatter governance parsing, trust posture helpers.
 - `chimera_memory/memory_observability.py`: recall traces, recall items, audit events, query helpers, JSON payload helpers.
 - `chimera_memory/memory_review.py`: human review queue actions and review audit logging.
+- `chimera_memory/memory_auto_capture.py`: session-close capture planning, governed markdown rendering, persona-root resolution, and safe file writing.
 - `chimera_memory/memory_entities.py`: local entity graph, entity/file links from frontmatter and enhancement output, shared-file connection queries, typed entity-edge queries/upserts.
 - `chimera_memory/memory_enhancement.py`: model-free sidecar request/response contract and untrusted-content wrapper.
 - `chimera_memory/memory_enhancement_provider.py`: provider priority, credential references, budget policy, safe invocation envelope, bounded failure categories.
@@ -65,6 +67,7 @@ Dependency direction matters:
 - Governance imports no queue/review/observability modules.
 - Observability imports no review or queue modules.
 - Review may depend on governance concepts and observability audit emission.
+- Auto-capture may depend on sanitizer helpers, but must not import the `memory.py` facade.
 - Entity graph may depend on observability audit emission.
 - Enhancement provider policy may depend on the sidecar contract only.
 - Enhancement runner may depend on provider policy and enhancement queue helpers.

@@ -78,6 +78,22 @@ Rules:
 - Review actions should not mutate raw markdown files.
 - Keep review state transitions explicit.
 
+### `memory_auto_capture.py`
+
+Owns the session-close auto-capture protocol lifted from OB1's auto-capture skill:
+
+- deterministic ACT NOW extraction
+- governed markdown rendering
+- persona-root resolution
+- safe file writing under `memory/episodes/`
+- safety scan summaries without raw secret payloads
+
+Rules:
+
+- Auto-captured memories are generated, pending review, evidence-only, and require user confirmation.
+- Auto-capture helpers may use sanitizer helpers, but must not import `memory.py`.
+- The facade is responsible for indexing written files and writing audit events.
+
 ### `memory_entities.py`
 
 Owns the local entity graph lifted from OB1:
@@ -205,6 +221,9 @@ memory_enhancement_runner.py
 memory_review.py
   imports memory_observability.py
 
+memory_auto_capture.py
+  imports sanitizer.py
+
 memory_entities.py
   imports memory_observability.py
 
@@ -233,6 +252,7 @@ Avoid:
 - Governance: `tests/test_memory_governance.py`
 - Observability: `tests/test_memory_observability.py`
 - Review: `tests/test_memory_review.py`
+- Auto-capture: `tests/test_memory_auto_capture.py`
 - Entities: `tests/test_memory_entities.py`
 - Sidecar contract: `tests/test_memory_enhancement.py`
 - Provider policy: `tests/test_memory_enhancement_provider.py`
