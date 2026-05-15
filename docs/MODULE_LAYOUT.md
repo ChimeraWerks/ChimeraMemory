@@ -214,6 +214,22 @@ Rules:
 - The facade owns indexing written files, building pyramid summaries, and audit completion events.
 - Skip attachments. The baseline importer stores text bodies only.
 
+### `memory_import_perplexity.py`
+
+Owns Perplexity export ingestion scaffolding:
+
+- markdown, text, and tolerant JSON loading from a file, directory, or zip export
+- conversation/message JSON flattening
+- governed markdown planning
+- safe file writing under `memory/imports/perplexity/`
+
+Rules:
+
+- Imported Perplexity documents are imported provenance but pending review and evidence-only by default.
+- Import helpers must not import `memory.py`.
+- The facade owns indexing written files, building pyramid summaries, and audit completion events.
+- Keep parser behavior tolerant. Perplexity export shapes are less stable than Gmail mbox or ChatGPT conversations.json.
+
 ### `memory_profile_export.py`
 
 Owns deterministic portable context exports from reviewed memory:
@@ -371,6 +387,12 @@ memory_import_gmail.py
   imports memory_observability.py
   imports sanitizer.py
 
+memory_import_perplexity.py
+  imports memory_auto_capture.py
+  imports memory_frontmatter.py
+  imports memory_observability.py
+  imports sanitizer.py
+
 memory_profile_export.py
   imports memory_frontmatter.py
   imports memory_observability.py
@@ -409,6 +431,7 @@ Avoid:
 - ChatGPT import: `tests/test_memory_import_chatgpt.py`
 - Obsidian import: `tests/test_memory_import_obsidian.py`
 - Gmail import: `tests/test_memory_import_gmail.py`
+- Perplexity import: `tests/test_memory_import_perplexity.py`
 - Portable profile export: `tests/test_memory_profile_export.py`
 - Sidecar contract: `tests/test_memory_enhancement.py`
 - Provider policy: `tests/test_memory_enhancement_provider.py`

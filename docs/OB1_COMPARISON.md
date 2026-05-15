@@ -88,7 +88,7 @@ The lift path was developed jointly across two days of pair-research between Per
 
 18. **Pyramid summaries:** Multi-resolution summaries for long-horizon recall. (OB1 ref: `recipes/chatgpt-conversation-import/README.md:194-221`)
 
-19. **Import pipelines:** ChatGPT export, Perplexity, Obsidian vault, X/Twitter, Instagram, Google Activity, Grok, Gmail, Atom/Blogger. ChatGPT, Obsidian, and Gmail scaffolding shipped; more importers can reuse the same governed-write pattern. (OB1 ref: `recipes/*-import/`)
+19. **Import pipelines:** ChatGPT export, Perplexity, Obsidian vault, X/Twitter, Instagram, Google Activity, Grok, Gmail, Atom/Blogger. ChatGPT, Obsidian, Gmail, and Perplexity scaffolding shipped; more importers can reuse the same governed-write pattern. (OB1 ref: `recipes/*-import/`)
 
 20. **Portable context profile export:** Reviewed memory to USER.md / SOUL.md / HEARTBEAT.md / structured JSON. Shipped as deterministic reviewed-memory export. (OB1 ref: `recipes/bring-your-own-context/README.md:206-231`)
 
@@ -116,7 +116,7 @@ The lift items above are sequenced into six phases. Each phase ships independent
 - **Phase 3:** Safety spine. Governance fields (provenance, confidence, lifecycle_status, review_status, sensitivity_tier, use-policy) on `memory_files` + YAML frontmatter extensions. Shipped.
 - **Phase 4:** Writeback hygiene. content_fingerprint UNIQUE index, idempotency_key UNIQUE index, review-queue MCP tools. Shipped.
 - **Phase 5:** Sidecar implementation + usability layer. Contract, queue, deterministic dry-run worker, provider plumbing, PA supervisor rails, smoke harness, PA dashboard, auto-capture session-close protocol, and live-retrieval dry-run checks shipped. Live tokened provider verification remains.
-- **Phase 6:** Expansion. Local entity graph tables, frontmatter-derived indexing, enhancement-result entity linking, shared-file connection query, typed entity-edge query/upsert helpers, typed memory-file reasoning edges, temporal validity sweep helpers, deterministic pyramid summaries, ChatGPT, Obsidian, and Gmail import scaffolding, and portable profile export shipped. Additional import pipelines remain.
+- **Phase 6:** Expansion. Local entity graph tables, frontmatter-derived indexing, enhancement-result entity linking, shared-file connection query, typed entity-edge query/upsert helpers, typed memory-file reasoning edges, temporal validity sweep helpers, deterministic pyramid summaries, ChatGPT, Obsidian, Gmail, and Perplexity import scaffolding, and portable profile export shipped. Additional import pipelines remain.
 
 ## Memory-Enhancement Sidecar Design
 

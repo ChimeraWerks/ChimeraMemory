@@ -32,7 +32,7 @@ The OB1-inspired lift is implemented through Phase 5e dashboard and auto-capture
 - Phase 5a-c: sidecar contract, enhancement job queue, deterministic dry-run worker.
 - Phase 5d groundwork: provider priority, credential-reference boundary, budget caps, safe invocation envelope, bounded failure categories, and injected-client runner boundary.
 - Phase 5e usability: PWA memory dashboard, session-close auto-capture protocol, and live-retrieval dry-run checks.
-- Phase 6 partial: local entity graph schema, frontmatter/enhancement-derived entity indexing, shared-file connection queries, typed entity-edge query/upsert helpers, typed memory-file reasoning edges, temporal sweep helpers, deterministic pyramid summaries, ChatGPT, Obsidian, and Gmail import scaffolding, and portable profile export.
+- Phase 6 partial: local entity graph schema, frontmatter/enhancement-derived entity indexing, shared-file connection queries, typed entity-edge query/upsert helpers, typed memory-file reasoning edges, temporal sweep helpers, deterministic pyramid summaries, ChatGPT, Obsidian, Gmail, and Perplexity import scaffolding, and portable profile export.
 - Refactor: `memory.py` split into focused schema, governance, observability, review, enhancement queue, and frontmatter modules.
 
 Pending larger work:
@@ -59,6 +59,7 @@ Do not use `memory.py` as a dumping ground. It is now the facade/orchestration l
 - `chimera_memory/memory_import_chatgpt.py`: ChatGPT export parsing, governed markdown planning, and safe file writing.
 - `chimera_memory/memory_import_obsidian.py`: Obsidian vault parsing, governed markdown planning, and safe file writing.
 - `chimera_memory/memory_import_gmail.py`: Gmail / Google Takeout mbox parsing, governed markdown planning, and safe restricted file writing.
+- `chimera_memory/memory_import_perplexity.py`: Perplexity markdown/text/JSON parsing, governed markdown planning, and safe file writing.
 - `chimera_memory/memory_profile_export.py`: portable USER.md / SOUL.md / HEARTBEAT.md / JSON context export from reviewed memory.
 - `chimera_memory/memory_enhancement.py`: model-free sidecar request/response contract and untrusted-content wrapper.
 - `chimera_memory/memory_enhancement_provider.py`: provider priority, credential references, budget policy, safe invocation envelope, bounded failure categories.
@@ -81,6 +82,7 @@ Dependency direction matters:
 - ChatGPT import helpers may depend on sanitizer helpers and persona-root resolution, but must not import the `memory.py` facade.
 - Obsidian import helpers may depend on frontmatter parsing, sanitizer helpers, and persona-root resolution, but must not import the `memory.py` facade.
 - Gmail import helpers may depend on sanitizer helpers and persona-root resolution, but must not import the `memory.py` facade.
+- Perplexity import helpers may depend on frontmatter parsing, sanitizer helpers, and persona-root resolution, but must not import the `memory.py` facade.
 - Profile export helpers may depend on frontmatter parsing, sanitizer helpers, and observability audit emission, but must not import the `memory.py` facade.
 - Enhancement provider policy may depend on the sidecar contract only.
 - Enhancement runner may depend on provider policy and enhancement queue helpers.
