@@ -78,6 +78,25 @@ Rules:
 - Review actions should not mutate raw markdown files.
 - Keep review state transitions explicit.
 
+### `memory_entities.py`
+
+Owns the local entity graph lifted from OB1:
+
+- `memory_entities`
+- `memory_file_entities`
+- `memory_entity_edges`
+- entity normalization and deduplication
+- frontmatter-derived entity indexing
+- shared-file connection queries
+- typed entity-edge upserts
+
+Rules:
+
+- Entity indexing is additive. Do not replace `memory_gaps`.
+- Entity helpers may call observability audit helpers.
+- Entity helpers must not import `memory.py`.
+- LLM extraction can populate these tables later, but this module must keep a local frontmatter-only path.
+
 ### `memory_enhancement.py`
 
 Owns the model-free sidecar contract:
@@ -183,6 +202,9 @@ memory_enhancement_runner.py
 memory_review.py
   imports memory_observability.py
 
+memory_entities.py
+  imports memory_observability.py
+
 memory_observability.py
   imports only stdlib
 
@@ -208,6 +230,7 @@ Avoid:
 - Governance: `tests/test_memory_governance.py`
 - Observability: `tests/test_memory_observability.py`
 - Review: `tests/test_memory_review.py`
+- Entities: `tests/test_memory_entities.py`
 - Sidecar contract: `tests/test_memory_enhancement.py`
 - Provider policy: `tests/test_memory_enhancement_provider.py`
 - Provider runner: `tests/test_memory_enhancement_runner.py`

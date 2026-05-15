@@ -214,6 +214,98 @@ ON memory_review_actions(action);
 CREATE INDEX IF NOT EXISTS idx_memory_review_actions_created_at
 ON memory_review_actions(created_at);
 
+CREATE TABLE IF NOT EXISTS memory_entities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id TEXT UNIQUE NOT NULL,
+    entity_type TEXT NOT NULL,
+    canonical_name TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    aliases TEXT DEFAULT '[]',
+    confidence REAL DEFAULT 1.0,
+    source TEXT DEFAULT 'frontmatter',
+    metadata TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(entity_type, normalized_name)
+);
+
+CREATE TABLE IF NOT EXISTS memory_file_entities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL REFERENCES memory_files(id) ON DELETE CASCADE,
+    entity_id INTEGER NOT NULL REFERENCES memory_entities(id) ON DELETE CASCADE,
+    mention_role TEXT NOT NULL DEFAULT 'related',
+    confidence REAL DEFAULT 1.0,
+    source TEXT DEFAULT 'frontmatter',
+    evidence TEXT DEFAULT '',
+    metadata TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(file_id, entity_id, mention_role)
+);
+
+CREATE TABLE IF NOT EXISTS memory_entity_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    edge_id TEXT UNIQUE NOT NULL,
+    source_entity_id INTEGER NOT NULL REFERENCES memory_entities(id) ON DELETE CASCADE,
+    target_entity_id INTEGER NOT NULL REFERENCES memory_entities(id) ON DELETE CASCADE,
+    relation_type TEXT NOT NULL DEFAULT 'related_to',
+    confidence REAL DEFAULT 1.0,
+    support_count INTEGER NOT NULL DEFAULT 1,
+    valid_from TEXT,
+    valid_until TEXT,
+    decay_weight REAL DEFAULT 1.0,
+    classifier_version TEXT DEFAULT '',
+    metadata TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    CHECK(source_entity_id <> target_entity_id),
+    UNIQUE(source_entity_id, target_entity_id, relation_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_entities_type_name
+ON memory_entities(entity_type, normalized_name);
+
+CREATE INDEX IF NOT EXISTS idx_memory_entities_name
+ON memory_entities(normalized_name);
+
+CREATE INDEX IF NOT EXISTS idx_memory_file_entities_file
+ON memory_file_entities(file_id);
+
+CREATE INDEX IF NOT EXISTS idx_memory_file_entities_entity
+ON memory_file_entities(entity_id);
+
+CREATE INDEX IF NOT EXISTS idx_memory_entity_edges_source
+ON memory_entity_edges(source_entity_id, relation_type);
+
+CREATE INDEX IF NOT EXISTS idx_memory_entity_edges_target
+ON memory_entity_edges(target_entity_id, relation_type);
+
+CREATE INDEX IF NOT EXISTS idx_memory_entity_edges_current
+ON memory_entity_edges(relation_type, source_entity_id)
+WHERE valid_until IS NULL;
+
+CREATE TRIGGER IF NOT EXISTS memory_entities_au_updated_at
+AFTER UPDATE OF
+    entity_type, canonical_name, normalized_name, aliases,
+    confidence, source, metadata
+ON memory_entities
+BEGIN
+    UPDATE memory_entities
+       SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE id = NEW.id;
+END;
+
+CREATE TRIGGER IF NOT EXISTS memory_entity_edges_au_updated_at
+AFTER UPDATE OF
+    source_entity_id, target_entity_id, relation_type, confidence,
+    support_count, valid_from, valid_until, decay_weight,
+    classifier_version, metadata
+ON memory_entity_edges
+BEGIN
+    UPDATE memory_entity_edges
+       SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE id = NEW.id;
+END;
+
 CREATE TABLE IF NOT EXISTS memory_enhancement_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id TEXT UNIQUE NOT NULL,

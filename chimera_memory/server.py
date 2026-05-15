@@ -817,6 +817,70 @@ def create_server():
         )
 
     @server.tool()
+    def memory_entity_index(persona: str | None = None, limit: int | None = None) -> str:
+        """Build the local entity graph from indexed memory frontmatter."""
+        _ensure_memory_indexed()
+        from .memory import memory_entity_index as _entity_index
+
+        result = _entity_index(_get_memory_conn(), persona=persona, limit=limit)
+        return (
+            f"Indexed entity graph. files={result['file_count']} "
+            f"links={result['link_count']} entities={result['entity_count']}"
+        )
+
+    @server.tool()
+    def memory_entity_query(
+        query: str = "",
+        entity_type: str = "",
+        persona: str = "",
+        connections_for: str = "",
+        limit: int = 50,
+    ) -> str:
+        """Query entities or show entity connections by shared memory evidence."""
+        _ensure_memory_indexed()
+        from .memory import memory_entity_connections as _connections
+        from .memory import memory_entity_query as _entity_query
+
+        if connections_for.strip():
+            results = _connections(
+                _get_memory_conn(),
+                entity_name=connections_for,
+                entity_type=entity_type or None,
+                persona=persona or None,
+                limit=limit,
+            )
+            if not results:
+                return "No entity connections found."
+            lines = [f"Connections for {connections_for}:"]
+            for row in results:
+                paths = ", ".join(row.get("evidence_paths", [])[:3])
+                suffix = f" | evidence: {paths}" if paths else ""
+                lines.append(
+                    f"- {row['canonical_name']} ({row['entity_type']}) "
+                    f"overlap={row['overlap_count']}{suffix}"
+                )
+            return "\n".join(lines)
+
+        results = _entity_query(
+            _get_memory_conn(),
+            query=query or None,
+            entity_type=entity_type or None,
+            persona=persona or None,
+            limit=limit,
+        )
+        if not results:
+            return "No entities found."
+        lines = ["Entity | Type | Files | Personas"]
+        lines.append("---|---|---|---")
+        for row in results:
+            personas = ", ".join(row.get("personas", []))
+            lines.append(
+                f"{row['canonical_name']} | {row['entity_type']} | "
+                f"{row['file_count']} | {personas}"
+            )
+        return "\n".join(lines)
+
+    @server.tool()
     def memory_enhancement_provider_plan() -> str:
         """Show the safe provider-resolution plan for memory enhancement."""
         from .memory_enhancement_provider import resolve_enhancement_provider_plan, safe_provider_receipt

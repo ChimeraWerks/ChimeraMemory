@@ -1,6 +1,6 @@
 # OB1 to ChimeraMemory Feature Comparison and Lift Plan
 
-**Status:** Research deliverable with implementation shipped through Phase 5c plus the Day 58 module split.
+**Status:** Research deliverable with implementation shipped through Phase 5e dashboard plus the first Phase 6 entity-graph slice.
 
 **Last updated:** 2026-05-14 (Day 58)
 
@@ -31,7 +31,7 @@ The lift path was developed jointly across two days of pair-research between Per
 - **Concurrency:** WAL mode + retry-with-backoff + tail-read pattern for active JSONL files
 - **Watcher:** watchdog filesystem watcher + poll safety net
 - **Incremental indexing:** MD5 file hashes for skip-unchanged
-- **MCP surface:** 20 tools across transcript, curated memory, and cognitive analytics layers (stdio MCP)
+- **MCP surface:** tools across transcript, curated memory, governance, enhancement, entity graph, and cognitive analytics layers (stdio MCP)
 - **Cognitive features:**
   - Zone-based loading (CORE/ACTIVE/PASSIVE/ARCHIVE) with weighted scoring
   - Algorithmic decay per memory type
@@ -60,13 +60,13 @@ The lift path was developed jointly across two days of pair-research between Per
 
 ### Medium-value lifts (second tier)
 
-6. **MCP tool-surface discipline:** OB1's `docs/05-tool-audit.md` has explicit recommendations on MCP tool count + capture/query/admin splits. CM already has 20 tools; audit before adding more. (OB1 ref: `docs/05-tool-audit.md:15-27, 183-238`)
+6. **MCP tool-surface discipline:** OB1's `docs/05-tool-audit.md` has explicit recommendations on MCP tool count + capture/query/admin splits. CM's tool surface is already broad; audit before adding more. (OB1 ref: `docs/05-tool-audit.md:15-27, 183-238`)
 
 7. **Typed memory relations:** OB1's `thought_edges` table with relations `supports / contradicts / evolved_into / supersedes / depends_on / related_to`. Each edge has `confidence`, `support_count` (bumped on re-classification), `valid_from`, `valid_until`, `decay_weight`, `classifier_version`. CM has graph analysis for disconnected clusters but no explicit relations. (OB1 ref: `schemas/typed-reasoning-edges/schema.sql:60-101`)
 
 8. **Temporal validity on relations:** `valid_from / valid_until / decay_weight` columns + partial index for current-only queries. Lets you say "this was true between dates X-Y" and decay relations over time. CM's decay is per-file importance, not per-relation. (OB1 ref: `schemas/typed-reasoning-edges/schema.sql:91-95, 122-130, 276-301`)
 
-9. **Entity extraction system:** OB1's `entities` + `edges` + `thought_entities` + `entity_extraction_queue` tables. Auto-extracted entities (people/projects/topics/tools/organizations/places) with canonical/normalized/aliases, evidence-bearing links to thoughts, async-processing queue with auto-queue trigger on `INSERT OR UPDATE`. CM has zero entity tracking. (OB1 ref: `schemas/entity-extraction/schema.sql:32-178`)
+9. **Entity extraction system:** OB1's `entities` + `edges` + `thought_entities` + `entity_extraction_queue` tables. Auto-extracted entities (people/projects/topics/tools/organizations/places) with canonical/normalized/aliases, evidence-bearing links to thoughts, async-processing queue with auto-queue trigger on `INSERT OR UPDATE`. CM now has the local SQLite graph tables, frontmatter-derived indexing, shared-file connection queries, and typed entity-edge upsert helpers; LLM extraction into those tables remains future work. (OB1 ref: `schemas/entity-extraction/schema.sql:32-178`)
 
 10. **Prompt-injection-safe enrichment wrapper:** OB1's `wrapThoughtContent` wraps captured content as untrusted data before LLM extraction. Critical precondition for any LLM-driven enrichment in CM. (OB1 ref: `integrations/entity-extraction-worker/index.ts:166, 202`)
 
@@ -115,8 +115,8 @@ The lift items above are sequenced into six phases. Each phase ships independent
 - **Phase 2:** Observability spine. `recall_traces` + `recall_items` + `audit_events` SQLite tables, MCP tools to query. Shipped.
 - **Phase 3:** Safety spine. Governance fields (provenance, confidence, lifecycle_status, review_status, sensitivity_tier, use-policy) on `memory_files` + YAML frontmatter extensions. Shipped.
 - **Phase 4:** Writeback hygiene. content_fingerprint UNIQUE index, idempotency_key UNIQUE index, review-queue MCP tools. Shipped.
-- **Phase 5:** Sidecar implementation + usability layer. Contract, queue, and deterministic dry-run worker shipped through Phase 5c. Real OAuth/model adapter, auto-capture protocol, live retrieval loop, and PA dashboard remain.
-- **Phase 6:** Expansion. Entity graph, typed relations, temporal validity, pyramid summaries, import pipelines, portable profile export.
+- **Phase 5:** Sidecar implementation + usability layer. Contract, queue, deterministic dry-run worker, provider plumbing, PA supervisor rails, smoke harness, and PA dashboard shipped. Live tokened provider verification, auto-capture protocol, and live retrieval loop remain.
+- **Phase 6:** Expansion. Local entity graph tables, frontmatter-derived indexing, shared-file connection query, and typed entity-edge upsert helpers shipped. Richer typed-relation workflows, temporal validity UX, pyramid summaries, import pipelines, and portable profile export remain.
 
 ## Memory-Enhancement Sidecar Design
 

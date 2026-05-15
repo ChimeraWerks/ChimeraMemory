@@ -22,6 +22,17 @@ from .memory_enhancement_queue import (
     memory_enhancement_complete,
     memory_enhancement_enqueue,
 )
+from .memory_entities import (
+    ENTITY_TYPES,
+    MENTION_ROLES,
+    memory_entity_connections,
+    memory_entity_index,
+    memory_entity_query,
+    memory_file_entity_links,
+    normalize_entity_name,
+    upsert_memory_entity,
+    upsert_memory_entity_edge,
+)
 from .memory_frontmatter import parse_frontmatter
 from .memory_governance import (
     INSTRUCTION_GRADE_PROVENANCE,
