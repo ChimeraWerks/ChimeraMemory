@@ -89,14 +89,43 @@ raw credentials.
 Default priority order:
 
 1. `openai` with model `gpt-4o-mini`
-2. `anthropic` with model `haiku-4.5`
-3. `ollama` with model `gemma2:2b`
-4. `dry_run` with model `deterministic-local`
+2. `anthropic` with model `claude-haiku-4-5`
+3. `google` with model `gemini-flash-latest` (user-facing label: Gemini)
+4. `openrouter` with model `openai/gpt-4o-mini`
+5. `ollama` with model `gemma2:2b`
+6. `lmstudio` with model `openai/gpt-oss-20b`
+7. `dry_run` with model `deterministic-local`
+
+Cloud model defaults are static unless explicitly enabled with:
+
+```text
+CHIMERA_MEMORY_ENHANCEMENT_USE_MODELS_DEV_CATALOG=true
+```
+
+When enabled, `chimera_memory/memory_model_catalog.py` reads a bundled
+models.dev snapshot first, then a local disk cache, then `https://models.dev/api.json`.
+The catalog is used only to choose recommended cloud defaults and surface model
+metadata for OpenAI, Anthropic, Gemini/Google, OpenRouter, and LM Studio. It
+never stores credentials or raw provider responses.
+
+Recommended user-facing setup groups providers as:
+
+1. OpenAI
+2. Anthropic
+3. Gemini
+4. OpenRouter
+5. Local AI
+
+Local AI is a UI grouping, not a stored provider id. Its submenu maps to:
+
+- `ollama` with endpoint `http://127.0.0.1:11434`
+- `lmstudio` with endpoint `http://127.0.0.1:1234/v1`
+- `openai_compatible` with a user-supplied endpoint and model
 
 The order can be overridden with:
 
 ```text
-CHIMERA_MEMORY_ENHANCEMENT_PROVIDER_ORDER=openai,anthropic,ollama,dry_run
+CHIMERA_MEMORY_ENHANCEMENT_PROVIDER_ORDER=openai,anthropic,google,openrouter,ollama,lmstudio,dry_run
 ```
 
 Cloud providers become available only when a credential reference is configured.
@@ -108,16 +137,32 @@ secret:memory-sidecar-openai
 env:CHIMERA_MEMORY_OPENAI_TOKEN_REF
 ```
 
+For frontier providers (OpenAI, Anthropic, Gemini/Google), `oauth:` refs are
+intended for subscription/external-OAuth credential plumbing and `secret:` or
+`env:` refs are intended for API-key plumbing. CM stores and logs only the ref.
+PA owns the actual credential resolution and provider-specific auth flow.
+
 Configured keys:
 
 ```text
 CHIMERA_MEMORY_ENHANCEMENT_OPENAI_CREDENTIAL_REF
 CHIMERA_MEMORY_ENHANCEMENT_ANTHROPIC_CREDENTIAL_REF
+CHIMERA_MEMORY_ENHANCEMENT_GOOGLE_CREDENTIAL_REF
+CHIMERA_MEMORY_ENHANCEMENT_OPENROUTER_CREDENTIAL_REF
 CHIMERA_MEMORY_ENHANCEMENT_OPENAI_MODEL
 CHIMERA_MEMORY_ENHANCEMENT_ANTHROPIC_MODEL
+CHIMERA_MEMORY_ENHANCEMENT_GOOGLE_MODEL
+CHIMERA_MEMORY_ENHANCEMENT_OPENROUTER_MODEL
+CHIMERA_MEMORY_ENHANCEMENT_USE_MODELS_DEV_CATALOG
+CHIMERA_MEMORY_MODEL_CATALOG_CACHE
 CHIMERA_MEMORY_ENHANCEMENT_OLLAMA_MODEL
+CHIMERA_MEMORY_ENHANCEMENT_LMSTUDIO_MODEL
+CHIMERA_MEMORY_ENHANCEMENT_OPENAI_COMPATIBLE_MODEL
 CHIMERA_MEMORY_ENHANCEMENT_ENABLE_LOCAL_MODEL
 CHIMERA_MEMORY_ENHANCEMENT_OLLAMA_ENDPOINT
+CHIMERA_MEMORY_ENHANCEMENT_LMSTUDIO_ENDPOINT
+CHIMERA_MEMORY_ENHANCEMENT_OPENAI_COMPATIBLE_ENDPOINT
+CHIMERA_MEMORY_ENHANCEMENT_OPENAI_COMPATIBLE_CREDENTIAL_REF
 CHIMERA_MEMORY_ENHANCEMENT_MAX_INPUT_TOKENS
 CHIMERA_MEMORY_ENHANCEMENT_MAX_INPUT_CHARS
 CHIMERA_MEMORY_ENHANCEMENT_MAX_OUTPUT_TOKENS

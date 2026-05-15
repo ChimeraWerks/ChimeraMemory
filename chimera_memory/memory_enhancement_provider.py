@@ -1,7 +1,8 @@
 """Provider policy helpers for memory-enhancement sidecar calls.
 
-This module does not perform network or model calls. It resolves safe provider
-plans, budget limits, and invocation payloads for a future sidecar runner.
+This module does not perform model calls. It resolves safe provider plans,
+budget limits, and invocation payloads for a future sidecar runner. Optional
+catalog-backed defaults are delegated to memory_model_catalog.
 """
 
 from __future__ import annotations
@@ -13,15 +14,28 @@ from typing import Any
 
 from .memory_enhancement import ENHANCEMENT_SCHEMA_VERSION
 
-PROVIDER_IDS = {"openai", "anthropic", "ollama", "dry_run"}
-NETWORK_PROVIDERS = {"openai", "anthropic"}
-LOCAL_PROVIDERS = {"ollama", "dry_run"}
-DEFAULT_PROVIDER_ORDER = ("openai", "anthropic", "ollama", "dry_run")
+PROVIDER_IDS = {
+    "openai",
+    "anthropic",
+    "google",
+    "openrouter",
+    "ollama",
+    "lmstudio",
+    "openai_compatible",
+    "dry_run",
+}
+NETWORK_PROVIDERS = {"openai", "anthropic", "google", "openrouter"}
+LOCAL_PROVIDERS = {"ollama", "lmstudio", "openai_compatible", "dry_run"}
+DEFAULT_PROVIDER_ORDER = ("openai", "anthropic", "google", "openrouter", "ollama", "lmstudio", "dry_run")
 
 PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
-    "anthropic": "haiku-4.5",
+    "anthropic": "claude-haiku-4-5",
+    "google": "gemini-flash-latest",
+    "openrouter": "openai/gpt-4o-mini",
     "ollama": "gemma2:2b",
+    "lmstudio": "openai/gpt-oss-20b",
+    "openai_compatible": "local-model",
     "dry_run": "deterministic-local",
 }
 
@@ -101,8 +115,20 @@ def _clean_provider_id(value: object) -> str:
         "dryrun": "dry_run",
         "dry": "dry_run",
         "local": "ollama",
+        "local_ai": "ollama",
+        "local-ai": "ollama",
         "anthropic_haiku": "anthropic",
         "openai_mini": "openai",
+        "gemini": "google",
+        "google_gemini": "google",
+        "google-gemini": "google",
+        "openrouter": "openrouter",
+        "openai-compatible": "openai_compatible",
+        "openai_compatible": "openai_compatible",
+        "custom_openai": "openai_compatible",
+        "custom-openai": "openai_compatible",
+        "lm_studio": "lmstudio",
+        "lm-studio": "lmstudio",
     }
     return aliases.get(text, text)
 
@@ -115,6 +141,20 @@ def parse_provider_order(raw: str | None) -> tuple[str, ...]:
         if provider_id in PROVIDER_IDS and provider_id not in order:
             order.append(provider_id)
     return tuple(order or DEFAULT_PROVIDER_ORDER)
+
+
+def _provider_default_model(provider_id: str, env: Mapping[str, str]) -> str:
+    if not _env_bool(env, "CHIMERA_MEMORY_ENHANCEMENT_USE_MODELS_DEV_CATALOG", default=False):
+        return PROVIDER_DEFAULT_MODELS[provider_id]
+    if provider_id not in {"openai", "anthropic", "google", "openrouter"}:
+        return PROVIDER_DEFAULT_MODELS[provider_id]
+    try:
+        from .memory_model_catalog import default_memory_enhancement_model
+
+        catalog_model = default_memory_enhancement_model(provider_id)
+    except Exception:
+        catalog_model = ""
+    return catalog_model or PROVIDER_DEFAULT_MODELS[provider_id]
 
 
 def _credential_ref(env: Mapping[str, str], provider_id: str) -> tuple[str, str]:
@@ -193,7 +233,7 @@ def load_enhancement_budget(env: Mapping[str, str]) -> EnhancementBudget:
 
 def _provider_candidate(provider_id: str, env: Mapping[str, str]) -> EnhancementProviderCandidate:
     model_key = f"CHIMERA_MEMORY_ENHANCEMENT_{provider_id.upper()}_MODEL"
-    model = str(env.get(model_key, "")).strip() or PROVIDER_DEFAULT_MODELS[provider_id]
+    model = str(env.get(model_key, "")).strip() or _provider_default_model(provider_id, env)
 
     if provider_id == "dry_run":
         return EnhancementProviderCandidate(
@@ -219,6 +259,55 @@ def _provider_candidate(provider_id: str, env: Mapping[str, str]) -> Enhancement
             model=model,
             available=enabled,
             reason="available" if enabled else "local_model_disabled",
+            endpoint=endpoint,
+            requires_network=False,
+            uses_user_oauth=False,
+        )
+
+    if provider_id == "lmstudio":
+        endpoint = str(
+            env.get("CHIMERA_MEMORY_ENHANCEMENT_LMSTUDIO_ENDPOINT", "http://127.0.0.1:1234/v1")
+        ).strip()
+        enabled = _env_bool(
+            env,
+            "CHIMERA_MEMORY_ENHANCEMENT_ENABLE_LOCAL_MODEL",
+            default=bool(env.get("CHIMERA_MEMORY_ENHANCEMENT_LMSTUDIO_ENDPOINT")),
+        )
+        return EnhancementProviderCandidate(
+            provider_id=provider_id,
+            model=model,
+            available=enabled,
+            reason="available" if enabled else "local_model_disabled",
+            endpoint=endpoint,
+            requires_network=False,
+            uses_user_oauth=False,
+        )
+
+    if provider_id == "openai_compatible":
+        endpoint = str(env.get("CHIMERA_MEMORY_ENHANCEMENT_OPENAI_COMPATIBLE_ENDPOINT", "")).strip()
+        explicit_model = str(env.get(model_key, "")).strip()
+        enabled = _env_bool(
+            env,
+            "CHIMERA_MEMORY_ENHANCEMENT_ENABLE_LOCAL_MODEL",
+            default=bool(endpoint and explicit_model),
+        )
+        reason = "available"
+        if not endpoint:
+            reason = "endpoint_missing"
+            enabled = False
+        elif not explicit_model:
+            reason = "model_missing"
+            enabled = False
+        credential_ref, credential_reason = _credential_ref(env, provider_id)
+        if credential_reason == "invalid_credential_ref":
+            reason = credential_reason
+            enabled = False
+        return EnhancementProviderCandidate(
+            provider_id=provider_id,
+            model=explicit_model or model,
+            available=enabled,
+            reason=reason if not enabled else "available",
+            credential_ref=credential_ref,
             endpoint=endpoint,
             requires_network=False,
             uses_user_oauth=False,

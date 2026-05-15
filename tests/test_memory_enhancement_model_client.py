@@ -9,7 +9,9 @@ import pytest
 from chimera_memory.memory_enhancement import build_memory_enhancement_request
 from chimera_memory.memory_enhancement_model_client import (
     ANTHROPIC_MESSAGES_ENDPOINT,
+    GOOGLE_GENERATE_CONTENT_ENDPOINT,
     OPENAI_CHAT_COMPLETIONS_ENDPOINT,
+    OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
     ProviderModelMemoryEnhancementClient,
 )
 from chimera_memory.memory_enhancement_provider import (
@@ -46,6 +48,8 @@ def _invocation(provider_order: str, **env: str) -> dict[str, object]:
             "CHIMERA_MEMORY_ENHANCEMENT_PROVIDER_ORDER": provider_order,
             "CHIMERA_MEMORY_ENHANCEMENT_OPENAI_CREDENTIAL_REF": "oauth:openai-memory",
             "CHIMERA_MEMORY_ENHANCEMENT_ANTHROPIC_CREDENTIAL_REF": "oauth:anthropic-memory",
+            "CHIMERA_MEMORY_ENHANCEMENT_GOOGLE_CREDENTIAL_REF": "oauth:gemini-memory",
+            "CHIMERA_MEMORY_ENHANCEMENT_OPENROUTER_CREDENTIAL_REF": "secret:openrouter-memory",
             "CHIMERA_MEMORY_ENHANCEMENT_ENABLE_LOCAL_MODEL": "true",
             **env,
         }
@@ -130,9 +134,87 @@ def test_anthropic_provider_client_builds_messages_request() -> None:
     assert request.full_url == ANTHROPIC_MESSAGES_ENDPOINT
     assert request.get_header("X-api-key") == fake_token
     assert request.get_header("Anthropic-version") == "2023-06-01"
-    assert body["model"] == "haiku-4.5"
+    assert body["model"] == "claude-haiku-4-5"
     assert body["temperature"] == 0
     assert metadata["summary"] == "Anthropic adapter returns fenced JSON."
+
+
+def test_google_provider_client_builds_generate_content_request() -> None:
+    fake_token = "TEST_ONLY_GOOGLE_TOKEN"
+    captured = {}
+
+    def opener(request, *, timeout):
+        captured["request"] = request
+        return FakeResponse(
+            {
+                "candidates": [
+                    {
+                        "content": {
+                            "parts": [
+                                {
+                                    "text": json.dumps(
+                                        {
+                                            "memory_type": "semantic",
+                                            "summary": "Gemini adapter returns JSON text parts.",
+                                            "topics": ["gemini"],
+                                        }
+                                    )
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        )
+
+    metadata = ProviderModelMemoryEnhancementClient(bearer_token=fake_token, opener=opener).invoke(
+        _invocation("gemini,dry_run")
+    )
+
+    request = captured["request"]
+    body = json.loads(request.data.decode("utf-8"))
+    assert request.full_url == GOOGLE_GENERATE_CONTENT_ENDPOINT.format(model="gemini-flash-latest")
+    assert request.get_header("X-goog-api-key") == fake_token
+    assert body["generationConfig"]["responseMimeType"] == "application/json"
+    assert body["generationConfig"]["temperature"] == 0
+    assert metadata["summary"] == "Gemini adapter returns JSON text parts."
+
+
+def test_openrouter_provider_client_uses_openai_compatible_chat_request() -> None:
+    fake_token = "TEST_ONLY_OPENROUTER_TOKEN"
+    captured = {}
+
+    def opener(request, *, timeout):
+        captured["request"] = request
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "memory_type": "semantic",
+                                    "summary": "OpenRouter adapter uses OpenAI-compatible chat.",
+                                    "topics": ["openrouter"],
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+
+    metadata = ProviderModelMemoryEnhancementClient(bearer_token=fake_token, opener=opener).invoke(
+        _invocation("openrouter,dry_run")
+    )
+
+    request = captured["request"]
+    body = json.loads(request.data.decode("utf-8"))
+    assert request.full_url == OPENROUTER_CHAT_COMPLETIONS_ENDPOINT
+    assert request.get_header("Authorization") == f"Bearer {fake_token}"
+    assert body["model"] == "openai/gpt-4o-mini"
+    assert body["response_format"] == {"type": "json_object"}
+    assert metadata["summary"] == "OpenRouter adapter uses OpenAI-compatible chat."
 
 
 def test_ollama_provider_client_uses_local_generate_endpoint_without_bearer_token() -> None:
@@ -163,6 +245,54 @@ def test_ollama_provider_client_uses_local_generate_endpoint_without_bearer_toke
     assert body["format"] == "json"
     assert body["stream"] is False
     assert metadata["tools"] == ["ollama"]
+
+
+def test_lmstudio_provider_client_uses_local_openai_compatible_endpoint_without_token() -> None:
+    captured = {}
+
+    def opener(request, *, timeout):
+        captured["request"] = request
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "memory_type": "semantic",
+                                    "summary": "LM Studio adapter uses local OpenAI-compatible chat.",
+                                    "tools": ["lmstudio"],
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+
+    metadata = ProviderModelMemoryEnhancementClient(opener=opener).invoke(
+        _invocation("lmstudio,dry_run", CHIMERA_MEMORY_ENHANCEMENT_LMSTUDIO_ENDPOINT="http://127.0.0.1:1234/v1")
+    )
+
+    request = captured["request"]
+    body = json.loads(request.data.decode("utf-8"))
+    assert request.full_url == "http://127.0.0.1:1234/v1/chat/completions"
+    assert request.get_header("Authorization") is None
+    assert body["model"] == "openai/gpt-oss-20b"
+    assert metadata["tools"] == ["lmstudio"]
+
+
+def test_custom_openai_compatible_provider_requires_endpoint_and_model() -> None:
+    plan = resolve_enhancement_provider_plan(
+        {
+            "CHIMERA_MEMORY_ENHANCEMENT_PROVIDER_ORDER": "openai_compatible,dry_run",
+            "CHIMERA_MEMORY_ENHANCEMENT_ENABLE_LOCAL_MODEL": "true",
+            "CHIMERA_MEMORY_ENHANCEMENT_OPENAI_COMPATIBLE_ENDPOINT": "http://127.0.0.1:5001/v1",
+        }
+    )
+
+    assert plan.selected.provider_id == "dry_run"
+    assert plan.candidates[0].reason == "model_missing"
 
 
 def test_provider_client_dry_run_path_needs_no_token() -> None:

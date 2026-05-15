@@ -22,7 +22,10 @@ from .memory_enhancement_sidecar import build_dry_run_sidecar_response
 
 OPENAI_CHAT_COMPLETIONS_ENDPOINT = "https://api.openai.com/v1/chat/completions"
 ANTHROPIC_MESSAGES_ENDPOINT = "https://api.anthropic.com/v1/messages"
+GOOGLE_GENERATE_CONTENT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+OPENROUTER_CHAT_COMPLETIONS_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 OLLAMA_DEFAULT_ENDPOINT = "http://127.0.0.1:11434"
+LMSTUDIO_DEFAULT_ENDPOINT = "http://127.0.0.1:1234/v1"
 
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(?P<body>.*?)\s*```\s*$", re.IGNORECASE | re.DOTALL)
@@ -49,8 +52,14 @@ class ProviderModelMemoryEnhancementClient:
             return self._invoke_openai(invocation, provider)
         if provider_id == "anthropic":
             return self._invoke_anthropic(invocation, provider)
+        if provider_id == "google":
+            return self._invoke_google(invocation, provider)
+        if provider_id == "openrouter":
+            return self._invoke_openrouter(invocation, provider)
         if provider_id == "ollama":
             return self._invoke_ollama(invocation, provider)
+        if provider_id in {"lmstudio", "openai_compatible"}:
+            return self._invoke_openai_compatible(invocation, provider)
         raise RuntimeError("memory enhancement provider unavailable")
 
     def _invoke_openai(self, invocation: Mapping[str, Any], provider: Mapping[str, str]) -> Mapping[str, Any]:
@@ -101,6 +110,45 @@ class ProviderModelMemoryEnhancementClient:
         first = content[0] if content and isinstance(content[0], Mapping) else {}
         return _metadata_from_model_text(first.get("text"))
 
+    def _invoke_google(self, invocation: Mapping[str, Any], provider: Mapping[str, str]) -> Mapping[str, Any]:
+        _require_bearer_token(self.bearer_token)
+        payload = {
+            "systemInstruction": {"parts": [{"text": _system_prompt()}]},
+            "contents": [{"role": "user", "parts": [{"text": _user_prompt(invocation)}]}],
+            "generationConfig": {
+                "temperature": 0,
+                "maxOutputTokens": _budget(invocation).max_output_tokens,
+                "responseMimeType": "application/json",
+            },
+        }
+        endpoint = provider.get("endpoint") or GOOGLE_GENERATE_CONTENT_ENDPOINT.format(
+            model=urllib.parse.quote(provider["model"], safe="")
+        )
+        response = _post_json(
+            endpoint,
+            payload,
+            {
+                "x-goog-api-key": self.bearer_token,
+            },
+            opener=self._opener,
+            timeout_seconds=_budget(invocation).timeout_seconds,
+        )
+        candidates = response.get("candidates") if isinstance(response.get("candidates"), list) else []
+        first = candidates[0] if candidates and isinstance(candidates[0], Mapping) else {}
+        content = first.get("content") if isinstance(first.get("content"), Mapping) else {}
+        parts = content.get("parts") if isinstance(content.get("parts"), list) else []
+        text = "".join(str(part.get("text") or "") for part in parts if isinstance(part, Mapping))
+        return _metadata_from_model_text(text)
+
+    def _invoke_openrouter(self, invocation: Mapping[str, Any], provider: Mapping[str, str]) -> Mapping[str, Any]:
+        _require_bearer_token(self.bearer_token)
+        return self._invoke_openai_chat(
+            invocation,
+            provider,
+            endpoint=provider.get("endpoint") or OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
+            headers={"Authorization": f"Bearer {self.bearer_token}"},
+        )
+
     def _invoke_ollama(self, invocation: Mapping[str, Any], provider: Mapping[str, str]) -> Mapping[str, Any]:
         endpoint = provider.get("endpoint") or OLLAMA_DEFAULT_ENDPOINT
         payload = {
@@ -122,13 +170,62 @@ class ProviderModelMemoryEnhancementClient:
         )
         return _metadata_from_model_text(response.get("response"))
 
+    def _invoke_openai_compatible(self, invocation: Mapping[str, Any], provider: Mapping[str, str]) -> Mapping[str, Any]:
+        endpoint = provider.get("endpoint") or LMSTUDIO_DEFAULT_ENDPOINT
+        headers = {"Authorization": f"Bearer {self.bearer_token}"} if self.bearer_token else {}
+        return self._invoke_openai_chat(
+            invocation,
+            provider,
+            endpoint=_join_url(endpoint, "/chat/completions"),
+            headers=headers,
+        )
+
+    def _invoke_openai_chat(
+        self,
+        invocation: Mapping[str, Any],
+        provider: Mapping[str, str],
+        *,
+        endpoint: str,
+        headers: Mapping[str, str],
+    ) -> Mapping[str, Any]:
+        payload = {
+            "model": provider["model"],
+            "messages": [
+                {"role": "system", "content": _system_prompt()},
+                {"role": "user", "content": _user_prompt(invocation)},
+            ],
+            "response_format": {"type": "json_object"},
+            "max_tokens": _budget(invocation).max_output_tokens,
+            "temperature": 0,
+        }
+        response = _post_json(
+            endpoint,
+            payload,
+            headers,
+            opener=self._opener,
+            timeout_seconds=_budget(invocation).timeout_seconds,
+        )
+        choices = response.get("choices") if isinstance(response.get("choices"), list) else []
+        message = choices[0].get("message") if choices and isinstance(choices[0], Mapping) else {}
+        return _metadata_from_model_text(message.get("content"))
+
+
 
 def _provider(invocation: Mapping[str, Any]) -> dict[str, str]:
     raw = invocation.get("provider") if isinstance(invocation.get("provider"), Mapping) else {}
     provider_id = str(raw.get("provider_id") or "").strip()
     model = str(raw.get("model") or "").strip()
     endpoint = str(raw.get("endpoint") or "").strip()
-    if provider_id not in {"openai", "anthropic", "ollama", "dry_run"}:
+    if provider_id not in {
+        "openai",
+        "anthropic",
+        "google",
+        "openrouter",
+        "ollama",
+        "lmstudio",
+        "openai_compatible",
+        "dry_run",
+    }:
         raise RuntimeError("memory enhancement provider unavailable")
     if not model:
         raise RuntimeError("memory enhancement provider unavailable")

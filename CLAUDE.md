@@ -30,7 +30,7 @@ The OB1-inspired lift is implemented through Phase 5e dashboard and auto-capture
 - Phase 3: provenance, confidence, lifecycle, review, sensitivity, and use-policy fields.
 - Phase 4: review queue tools.
 - Phase 5a-c: sidecar contract, enhancement job queue, deterministic dry-run worker.
-- Phase 5d groundwork: provider priority, credential-reference boundary, budget caps, safe invocation envelope, bounded failure categories, and injected-client runner boundary.
+- Phase 5d groundwork: provider priority, credential-reference boundary, optional models.dev-backed cloud model defaults for OpenAI, Anthropic, Gemini/Google, OpenRouter, and LM Studio, budget caps, safe invocation envelope, bounded failure categories, and injected-client runner boundary.
 - Phase 5e usability: PWA memory dashboard, session-close auto-capture protocol, and live-retrieval dry-run checks.
 - Phase 6 partial: local entity graph schema, frontmatter/enhancement-derived entity indexing, shared-file connection queries, typed entity-edge query/upsert helpers, typed memory-file reasoning edges, temporal sweep helpers, deterministic pyramid summaries, ChatGPT, Obsidian, Gmail, Perplexity, Grok, X/Twitter, Instagram, Google Activity, and Atom/Blogger import scaffolding, and portable profile export.
 - Refactor: `memory.py` split into focused schema, governance, observability, review, enhancement queue, and frontmatter modules.
@@ -68,6 +68,7 @@ Do not use `memory.py` as a dumping ground. It is now the facade/orchestration l
 - `chimera_memory/memory_profile_export.py`: portable USER.md / SOUL.md / HEARTBEAT.md / JSON context export from reviewed memory.
 - `chimera_memory/memory_enhancement.py`: model-free sidecar request/response contract and untrusted-content wrapper.
 - `chimera_memory/memory_enhancement_provider.py`: provider priority, credential references, budget policy, safe invocation envelope, bounded failure categories.
+- `chimera_memory/memory_model_catalog.py`: bundled/offline-first models.dev catalog parser/cache for recommended OpenAI, Anthropic, Gemini/Google, OpenRouter, and LM Studio memory-enhancement models.
 - `chimera_memory/memory_enhancement_runner.py`: provider-aware batch runner using an injected client protocol. No token storage or provider-specific network code.
 - `chimera_memory/memory_enhancement_queue.py`: SQLite queue for enhancement jobs, enqueue/claim/complete helpers.
 - `chimera_memory/memory_frontmatter.py`: markdown frontmatter parsing shared by indexing and enhancement enqueue.

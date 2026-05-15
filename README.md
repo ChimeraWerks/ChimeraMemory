@@ -421,6 +421,13 @@ not instruction-grade. `serve-dry-run` exposes the same deterministic behavior
 over CM's HTTP sidecar contract for local integration tests. `sidecar-run`
 processes queued jobs through a sidecar endpoint.
 
+Set `CHIMERA_MEMORY_ENHANCEMENT_USE_MODELS_DEV_CATALOG=true` to let
+provider-plan use CM's bundled/offline-first models.dev catalog for recommended
+OpenAI, Anthropic, Gemini/Google, OpenRouter, and LM Studio model defaults.
+Explicit `CHIMERA_MEMORY_ENHANCEMENT_*_MODEL` values still win. The intended
+user setup flow is OpenAI, Anthropic, Gemini, OpenRouter, or Local AI. Local AI
+then maps to Ollama, LM Studio, or a custom OpenAI-compatible endpoint.
+
 ## Configuration
 
 A config file is auto-generated on first run at `~/.chimera-memory/config.yaml`. Every option is commented with plain-English explanations.

@@ -349,6 +349,8 @@ Owns provider policy for future memory-enhancement sidecar calls:
 - provider priority order
 - credential-reference validation
 - model defaults
+- optional models.dev-backed recommended OpenAI, Anthropic, Gemini/Google,
+  OpenRouter, and LM Studio defaults
 - budget caps
 - safe invocation envelope
 - bounded failure categories
@@ -356,10 +358,31 @@ Owns provider policy for future memory-enhancement sidecar calls:
 
 Rules:
 
-- No network calls here.
+- No provider model calls here.
+- Catalog lookups must go through `memory_model_catalog.py` and stay env-gated.
+- Store Gemini internally as provider id `google`, matching models.dev.
+- Store Local AI submenu choices internally as `ollama`, `lmstudio`, or
+  `openai_compatible`.
 - No raw OAuth token or bearer token values here.
 - Credential references are names such as `oauth:openai-memory`, not credentials.
 - This module may import the sidecar contract, but not queue/review/schema/facade modules.
+
+### `memory_model_catalog.py`
+
+Owns the narrow models.dev catalog integration used by the memory-enhancement picker:
+
+- bundled models.dev snapshot fallback
+- disk cache with short refresh interval and offline fallback
+- provider/model dataclasses
+- recommended model filtering for cheap text structured extraction
+
+Rules:
+
+- No credential reads.
+- No provider calls other than the public catalog fetch.
+- The catalog feeds cloud and bundled recommendation lists only. Local AI model
+  discovery belongs to PA or a later endpoint-probing module that queries the
+  user's running endpoint.
 
 ### `memory_enhancement_runner.py`
 
