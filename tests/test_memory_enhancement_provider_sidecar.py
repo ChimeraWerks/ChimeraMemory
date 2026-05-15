@@ -288,8 +288,66 @@ def test_google_cloudcode_discovers_project_when_hermes_pool_credential_has_none
 
     assert result["summary"] == "ok"
     assert captured[0]["endpoint"] == "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+    assert captured[0]["payload"] == {
+        "metadata": {
+            "duetProject": "",
+            "ideType": "IDE_UNSPECIFIED",
+            "platform": "PLATFORM_UNSPECIFIED",
+            "pluginType": "GEMINI",
+        }
+    }
+    assert captured[0]["headers"]["User-Agent"] == "google-api-nodejs-client/9.15.1 (gzip) model/gemini-2.5-flash"
+    assert captured[0]["headers"]["X-Goog-Api-Client"] == "gl-node/24.0.0"
     assert captured[1]["endpoint"] == "https://cloudcode-pa.googleapis.com/v1internal:generateContent"
+    assert captured[1]["headers"]["User-Agent"] == "hermes-agent (gemini-cli-compat)"
+    assert captured[1]["headers"]["X-Goog-Api-Client"] == "gl-python/hermes"
     assert captured[1]["payload"]["project"] == "project-discovered"
+
+
+def test_google_cloudcode_onboards_free_tier_when_project_missing(monkeypatch, tmp_path: Path):
+    captured: list[dict[str, object]] = []
+
+    def fake_post_json(endpoint, payload, headers, *, opener, timeout_seconds):
+        captured.append({"endpoint": endpoint, "payload": payload, "headers": headers})
+        if endpoint.endswith(":loadCodeAssist"):
+            return {"allowedTiers": [{"id": "free-tier", "isDefault": True}]}
+        if endpoint.endswith(":onboardUser"):
+            return {"done": True, "response": {"cloudaicompanionProject": "project-onboarded"}}
+        return {"response": {"candidates": [{"content": {"parts": [{"text": json.dumps({"summary": "ok"})}]}}]}}
+
+    monkeypatch.setattr(
+        "chimera_memory.memory_enhancement_provider_sidecar._memory_model_client_module",
+        lambda: _fake_model_client(fake_post_json),
+    )
+    store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
+    store.upsert(
+        MemoryEnhancementOAuthCredential(
+            name="google-memory",
+            provider_id="google",
+            source="browser:google_pkce",
+            access_token="TEST_ONLY_GOOGLE_ACCESS",
+            refresh_token="TEST_ONLY_GOOGLE_REFRESH",
+            transport="google_cloudcode",
+        )
+    )
+    client = ResolvingMemoryEnhancementProviderClient(
+        oauth_resolver=OAuthMemoryEnhancementCredentialResolver(store),
+        opener=lambda *_args, **_kwargs: None,
+    )
+
+    result = client.invoke(_invocation("google", "gemini-2.5-flash", "oauth:google-memory"))
+
+    assert result["summary"] == "ok"
+    assert captured[1]["endpoint"] == "https://cloudcode-pa.googleapis.com/v1internal:onboardUser"
+    assert captured[1]["payload"] == {
+        "tierId": "free-tier",
+        "metadata": {
+            "ideType": "IDE_UNSPECIFIED",
+            "platform": "PLATFORM_UNSPECIFIED",
+            "pluginType": "GEMINI",
+        },
+    }
+    assert captured[2]["payload"]["project"] == "project-onboarded"
 
 
 def test_google_cloudcode_endpoint_ignores_public_gemini_base_url():

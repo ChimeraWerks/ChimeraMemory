@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import urllib.parse
+import urllib.request
 from pathlib import Path
 
 from chimera_memory.memory_enhancement_oauth import MemoryEnhancementOAuthStore
@@ -53,7 +54,7 @@ def test_google_browser_oauth_flow_uses_pkce_and_stores_client_metadata(monkeypa
     monkeypatch.setenv("CHIMERA_MEMORY_GOOGLE_OAUTH_CLIENT_SECRET", "TEST_ONLY_GOOGLE_CLIENT_SECRET")
     monkeypatch.setenv("CHIMERA_MEMORY_GOOGLE_CLOUD_PROJECT", "project-test")
     store = MemoryEnhancementOAuthStore(tmp_path / "auth.json")
-    started = start_memory_enhancement_oauth_flow("google", store=store)
+    started = start_memory_enhancement_oauth_flow("google", store=store, start_callback_server=False)
     flow_state = _flow_state(tmp_path, started["flow_id"])
     captured: dict[str, object] = {}
 
@@ -81,6 +82,41 @@ def test_google_browser_oauth_flow_uses_pkce_and_stores_client_metadata(monkeypa
     assert credential.refresh_token == "TEST_ONLY_GOOGLE_REFRESH"
     assert credential.project_id == "project-test"
     assert credential.extra["client_id"] == "123456789012-testclientidvalue.apps.googleusercontent.com"
+
+
+def test_google_oauth_loopback_callback_can_be_polled(monkeypatch, tmp_path: Path):
+    monkeypatch.setenv("CHIMERA_MEMORY_GOOGLE_OAUTH_CLIENT_ID", "123456789012-testclientidvalue.apps.googleusercontent.com")
+    monkeypatch.setenv("CHIMERA_MEMORY_GOOGLE_OAUTH_CLIENT_SECRET", "TEST_ONLY_GOOGLE_CLIENT_SECRET")
+    store = MemoryEnhancementOAuthStore(tmp_path / "auth.json")
+    started = start_memory_enhancement_oauth_flow("google", store=store)
+    flow_state = _flow_state(tmp_path, started["flow_id"])
+    captured: dict[str, object] = {}
+
+    def opener(request, *, timeout):
+        captured["url"] = request.full_url
+        captured["payload"] = urllib.parse.parse_qs(request.data.decode("utf-8"))
+        return _json_response(
+            {
+                "access_token": "TEST_ONLY_GOOGLE_ACCESS",
+                "refresh_token": "TEST_ONLY_GOOGLE_REFRESH",
+                "expires_in": 3600,
+            }
+        )
+
+    callback = (
+        f"{flow_state['redirect_uri']}?code=TEST_ONLY_GOOGLE_CODE&state={flow_state['state']}"
+    )
+    with urllib.request.urlopen(callback, timeout=5) as response:
+        assert response.status == 200
+
+    result = poll_memory_enhancement_oauth_flow(started["flow_id"], store=store, opener=opener)
+    credential = store.get("google-memory", provider_id="google")
+
+    assert started["submit_mode"] == "poll"
+    assert result["status"] == "approved"
+    assert captured["payload"]["code"] == ["TEST_ONLY_GOOGLE_CODE"]
+    assert captured["payload"]["redirect_uri"] == [flow_state["redirect_uri"]]
+    assert credential.access_token == "TEST_ONLY_GOOGLE_ACCESS"
 
 
 def test_openai_device_oauth_flow_polls_and_persists_codex_credential(tmp_path: Path):

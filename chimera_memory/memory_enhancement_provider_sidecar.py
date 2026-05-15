@@ -25,6 +25,7 @@ from .memory_enhancement_oauth import (
 OPENAI_CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
 ANTHROPIC_OAUTH_ENDPOINT = "https://api.anthropic.com/v1/messages"
 GOOGLE_CLOUDCODE_ENDPOINT = "https://cloudcode-pa.googleapis.com/v1internal:generateContent"
+GOOGLE_CLOUDCODE_FREE_TIER_ID = "free-tier"
 
 OPENAI_CODEX_HEADERS = {
     "User-Agent": "codex_cli_rs/0.0.0 (ChimeraMemory)",
@@ -37,8 +38,12 @@ ANTHROPIC_OAUTH_HEADERS = {
     "user-agent": "claude-cli/1.0.0 (external, cli)",
 }
 GOOGLE_CLOUDCODE_HEADERS = {
-    "User-Agent": "chimera-memory (gemini-cli-compat)",
-    "X-Goog-Api-Client": "gl-python/chimera-memory",
+    "User-Agent": "hermes-agent (gemini-cli-compat)",
+    "X-Goog-Api-Client": "gl-python/hermes",
+}
+GOOGLE_CLOUDCODE_DISCOVERY_HEADERS = {
+    "User-Agent": "google-api-nodejs-client/9.15.1 (gzip)",
+    "X-Goog-Api-Client": "gl-node/24.0.0",
 }
 
 
@@ -398,17 +403,14 @@ def _google_cloudcode_project_id(
 ) -> str:
     if credential.project_id:
         return credential.project_id
-    initial_project = "default-project"
     headers = {
         "Authorization": f"Bearer {credential.access_token}",
-        **GOOGLE_CLOUDCODE_HEADERS,
+        "x-activity-request-id": str(uuid.uuid4()),
+        **_google_cloudcode_discovery_headers(provider),
     }
     load_response = model_client._post_json(
         _google_cloudcode_endpoint(provider, credential, "loadCodeAssist"),
-        {
-            "cloudaicompanionProject": initial_project,
-            "metadata": {"duetProject": initial_project},
-        },
+        _google_cloudcode_load_request(""),
         headers,
         opener=opener or model_client.urllib.request.urlopen,
         timeout_seconds=timeout_seconds,
@@ -417,10 +419,13 @@ def _google_cloudcode_project_id(
     if discovered:
         return discovered
 
-    tier_id = _google_cloudcode_default_tier(load_response) or "free-tier"
+    tier_id = _google_cloudcode_current_tier(load_response)
+    if tier_id:
+        raise RuntimeError("memory enhancement google project unavailable")
+
     onboard_request = {
-        "tierId": tier_id,
-        "cloudaicompanionProject": initial_project,
+        "tierId": _google_cloudcode_default_tier(load_response) or GOOGLE_CLOUDCODE_FREE_TIER_ID,
+        "metadata": _google_cloudcode_client_metadata(),
     }
     deadline = time.monotonic() + max(1, min(int(timeout_seconds), 30))
     while True:
@@ -434,12 +439,56 @@ def _google_cloudcode_project_id(
         discovered = _google_cloudcode_project_from_response(onboard_response)
         if discovered:
             return discovered
+        operation_name = str(onboard_response.get("name") or "").strip()
+        if not operation_name or onboard_response.get("done") is True:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(1)
+        onboard_response = model_client._post_json(
+            _google_cloudcode_operation_endpoint(credential, operation_name),
+            {},
+            headers,
+            opener=opener or model_client.urllib.request.urlopen,
+            timeout_seconds=timeout_seconds,
+        )
+        discovered = _google_cloudcode_project_from_response(onboard_response)
+        if discovered:
+            return discovered
         if onboard_response.get("done") is True:
             break
         if time.monotonic() >= deadline:
             break
         time.sleep(1)
     raise RuntimeError("memory enhancement google project unavailable")
+
+
+def _google_cloudcode_load_request(project_id: str) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "metadata": {
+            "duetProject": project_id,
+            **_google_cloudcode_client_metadata(),
+        }
+    }
+    if project_id:
+        payload["cloudaicompanionProject"] = project_id
+    return payload
+
+
+def _google_cloudcode_client_metadata() -> dict[str, str]:
+    return {
+        "ideType": "IDE_UNSPECIFIED",
+        "platform": "PLATFORM_UNSPECIFIED",
+        "pluginType": "GEMINI",
+    }
+
+
+def _google_cloudcode_discovery_headers(provider: Mapping[str, str]) -> dict[str, str]:
+    headers = dict(GOOGLE_CLOUDCODE_DISCOVERY_HEADERS)
+    model = str(provider.get("model") or "").strip()
+    if model:
+        headers["User-Agent"] = f"{headers['User-Agent']} model/{model}"
+    return headers
 
 
 def _google_cloudcode_endpoint(
@@ -462,6 +511,11 @@ def _google_cloudcode_base_url(credential: MemoryEnhancementOAuthCredential) -> 
     if raw.endswith("/v1internal"):
         return raw.removesuffix("/v1internal")
     return raw
+
+
+def _google_cloudcode_operation_endpoint(credential: MemoryEnhancementOAuthCredential, operation_name: str) -> str:
+    base_url = _google_cloudcode_base_url(credential)
+    return f"{base_url}/v1internal/{operation_name.lstrip('/')}"
 
 
 def _google_cloudcode_project_from_response(response: Mapping[str, Any]) -> str:
@@ -490,6 +544,11 @@ def _google_cloudcode_default_tier(response: Mapping[str, Any]) -> str:
         if isinstance(tier, Mapping) and tier.get("isDefault") is True:
             return str(tier.get("id") or "").strip()
     return ""
+
+
+def _google_cloudcode_current_tier(response: Mapping[str, Any]) -> str:
+    current = response.get("currentTier") if isinstance(response.get("currentTier"), Mapping) else {}
+    return str(current.get("id") or "").strip() if isinstance(current, Mapping) else ""
 
 
 def _metadata_from_google_cloudcode_response(response: Mapping[str, Any], model_client: Any) -> Mapping[str, Any]:
