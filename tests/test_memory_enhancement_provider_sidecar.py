@@ -76,6 +76,13 @@ def test_resolving_provider_client_uses_anthropic_oauth_transport(monkeypatch, t
     assert isinstance(headers, dict)
     assert headers["Authorization"] == "Bearer TEST_ONLY_ANTHROPIC_ACCESS"
     assert "anthropic-beta" in headers
+    assert headers["anthropic-beta"] == (
+        "interleaved-thinking-2025-05-14,"
+        "fine-grained-tool-streaming-2025-05-14,"
+        "claude-code-20250219,"
+        "oauth-2025-04-20"
+    )
+    assert headers["user-agent"] == "claude-cli/2.1.74 (external, cli)"
     assert captured["payload"]["model"] == "claude-haiku-4-5"
 
 
@@ -204,6 +211,56 @@ def test_resolving_provider_client_refreshes_expiring_oauth_before_model_call(mo
     assert persisted.refresh_token == "TEST_ONLY_NEW_ANTHROPIC_REFRESH"
 
 
+def test_anthropic_oauth_retries_once_after_auth_failure(monkeypatch, tmp_path: Path):
+    captured_headers: list[dict[str, str]] = []
+
+    def fake_post_json(_endpoint, _payload, headers, *, opener, timeout_seconds):
+        captured_headers.append(headers)
+        if len(captured_headers) == 1:
+            raise RuntimeError("memory enhancement provider auth failed")
+        return {"content": [{"text": json.dumps({"summary": "ok"})}]}
+
+    monkeypatch.setattr(
+        "chimera_memory.memory_enhancement_provider_sidecar._memory_model_client_module",
+        lambda: _fake_model_client(fake_post_json),
+    )
+    store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
+    store.upsert(
+        MemoryEnhancementOAuthCredential(
+            name="anthropic-memory",
+            provider_id="anthropic",
+            source="manual:hermes_pkce",
+            access_token="TEST_ONLY_OLD_ANTHROPIC_ACCESS",
+            refresh_token="TEST_ONLY_OLD_ANTHROPIC_REFRESH",
+            expires_at_ms=4_200_000_000_000,
+            transport="anthropic_oauth",
+        )
+    )
+
+    def refresher(credential: MemoryEnhancementOAuthCredential) -> MemoryEnhancementOAuthCredential:
+        return MemoryEnhancementOAuthCredential(
+            name=credential.name,
+            provider_id=credential.provider_id,
+            source=credential.source,
+            access_token="TEST_ONLY_NEW_ANTHROPIC_ACCESS",
+            refresh_token=credential.refresh_token,
+            expires_at_ms=4_200_000_000_000,
+            transport=credential.transport,
+        )
+
+    client = ResolvingMemoryEnhancementProviderClient(
+        oauth_resolver=OAuthMemoryEnhancementCredentialResolver(store, refresher=refresher),
+        opener=lambda *_args, **_kwargs: None,
+    )
+
+    result = client.invoke(_invocation("anthropic", "claude-haiku-4-5", "oauth:anthropic-memory"))
+
+    assert result["summary"] == "ok"
+    assert len(captured_headers) == 2
+    assert captured_headers[0]["Authorization"] == "Bearer TEST_ONLY_OLD_ANTHROPIC_ACCESS"
+    assert captured_headers[1]["Authorization"] == "Bearer TEST_ONLY_NEW_ANTHROPIC_ACCESS"
+
+
 def test_resolving_provider_client_uses_google_cloudcode_transport(monkeypatch, tmp_path: Path):
     captured: dict[str, object] = {}
 
@@ -235,7 +292,7 @@ def test_resolving_provider_client_uses_google_cloudcode_transport(monkeypatch, 
         opener=lambda *_args, **_kwargs: None,
     )
 
-    result = client.invoke(_invocation("google", "gemini-2.5-flash", "oauth:google-memory"))
+    result = client.invoke(_invocation("google", "gemini-3-flash-preview", "oauth:google-memory"))
 
     headers = captured["headers"]
     payload = captured["payload"]
@@ -244,8 +301,46 @@ def test_resolving_provider_client_uses_google_cloudcode_transport(monkeypatch, 
     assert headers["Authorization"] == "Bearer TEST_ONLY_GOOGLE_ACCESS"
     assert isinstance(payload, dict)
     assert payload["project"] == "project-test"
-    assert payload["model"] == "gemini-2.5-flash"
+    assert payload["model"] == "gemini-3-flash-preview"
     assert "request" in payload
+
+
+def test_google_cloudcode_falls_back_to_hermes_oauth_model_list(monkeypatch, tmp_path: Path):
+    captured_models: list[str] = []
+
+    def fake_post_json(endpoint, payload, headers, *, opener, timeout_seconds):
+        if endpoint.endswith(":generateContent"):
+            captured_models.append(payload["model"])
+            if payload["model"] == "gemini-2.5-flash":
+                raise RuntimeError("memory enhancement provider unavailable")
+            return {"candidates": [{"content": {"parts": [{"text": json.dumps({"summary": "ok"})}]}}]}
+        return {"cloudaicompanionProject": "project-test"}
+
+    monkeypatch.setattr(
+        "chimera_memory.memory_enhancement_provider_sidecar._memory_model_client_module",
+        lambda: _fake_model_client(fake_post_json),
+    )
+    store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
+    store.upsert(
+        MemoryEnhancementOAuthCredential(
+            name="google-memory",
+            provider_id="google",
+            source="manual:google_pkce",
+            access_token="TEST_ONLY_GOOGLE_ACCESS",
+            refresh_token="TEST_ONLY_GOOGLE_REFRESH",
+            transport="google_cloudcode",
+            project_id="project-test",
+        )
+    )
+    client = ResolvingMemoryEnhancementProviderClient(
+        oauth_resolver=OAuthMemoryEnhancementCredentialResolver(store),
+        opener=lambda *_args, **_kwargs: None,
+    )
+
+    result = client.invoke(_invocation("google", "gemini-2.5-flash", "oauth:google-memory"))
+
+    assert result["summary"] == "ok"
+    assert captured_models == ["gemini-2.5-flash", "gemini-3-flash-preview"]
 
 
 def test_google_cloudcode_discovers_project_when_hermes_pool_credential_has_none(monkeypatch, tmp_path: Path):
@@ -284,7 +379,7 @@ def test_google_cloudcode_discovers_project_when_hermes_pool_credential_has_none
         opener=lambda *_args, **_kwargs: None,
     )
 
-    result = client.invoke(_invocation("google", "gemini-2.5-flash", "oauth:google-memory"))
+    result = client.invoke(_invocation("google", "gemini-3-flash-preview", "oauth:google-memory"))
 
     assert result["summary"] == "ok"
     assert captured[0]["endpoint"] == "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
@@ -296,7 +391,7 @@ def test_google_cloudcode_discovers_project_when_hermes_pool_credential_has_none
             "pluginType": "GEMINI",
         }
     }
-    assert captured[0]["headers"]["User-Agent"] == "google-api-nodejs-client/9.15.1 (gzip) model/gemini-2.5-flash"
+    assert captured[0]["headers"]["User-Agent"] == "google-api-nodejs-client/9.15.1 (gzip) model/gemini-3-flash-preview"
     assert captured[0]["headers"]["X-Goog-Api-Client"] == "gl-node/24.0.0"
     assert captured[1]["endpoint"] == "https://cloudcode-pa.googleapis.com/v1internal:generateContent"
     assert captured[1]["headers"]["User-Agent"] == "hermes-agent (gemini-cli-compat)"
@@ -335,7 +430,7 @@ def test_google_cloudcode_onboards_free_tier_when_project_missing(monkeypatch, t
         opener=lambda *_args, **_kwargs: None,
     )
 
-    result = client.invoke(_invocation("google", "gemini-2.5-flash", "oauth:google-memory"))
+    result = client.invoke(_invocation("google", "gemini-3-flash-preview", "oauth:google-memory"))
 
     assert result["summary"] == "ok"
     assert captured[1]["endpoint"] == "https://cloudcode-pa.googleapis.com/v1internal:onboardUser"

@@ -90,7 +90,7 @@ Default priority order:
 
 1. `openai` with model `gpt-4o-mini`
 2. `anthropic` with model `claude-haiku-4-5`
-3. `google` with model `gemini-2.5-flash` (user-facing label: Gemini)
+3. `google` with model `gemini-3-flash-preview` (user-facing label: Gemini)
 4. `openrouter` with model `openai/gpt-4o-mini`
 5. `ollama` with model `gemma2:2b`
 6. `lmstudio` with model `openai/gpt-oss-20b`

@@ -19,6 +19,8 @@ from pathlib import Path
 from tempfile import NamedTemporaryFile
 from typing import Any
 
+from .memory_enhancement_google import GOOGLE_CLOUDCODE_MEMORY_MODEL_CANDIDATES
+
 MODELS_DEV_URL = "https://models.dev/api.json"
 MEMORY_ENHANCEMENT_PROVIDER_IDS = {"openai", "anthropic", "google", "openrouter", "lmstudio"}
 DISK_CACHE_TTL_SECONDS = 24 * 60 * 60
@@ -41,10 +43,7 @@ _PREFERRED_MEMORY_MODELS: dict[str, tuple[str, ...]] = {
         "claude-3-haiku-20240307",
     ),
     "google": (
-        "gemini-2.5-flash",
-        "gemini-flash-latest",
-        "gemini-2.5-flash-lite",
-        "gemini-1.5-flash",
+        *GOOGLE_CLOUDCODE_MEMORY_MODEL_CANDIDATES,
     ),
     "openrouter": (
         "openai/gpt-4o-mini",
@@ -387,14 +386,32 @@ def _minimal_catalog_snapshot() -> dict[str, Any]:
             "id": "google",
             "name": "Google",
             "models": {
-                "gemini-flash-latest": {
-                    "id": "gemini-flash-latest",
-                    "name": "Gemini Flash Latest",
+                "gemini-3-flash-preview": {
+                    "id": "gemini-3-flash-preview",
+                    "name": "Gemini 3 Flash Preview",
                     "tool_call": True,
                     "structured_output": True,
                     "modalities": {"input": ["text"], "output": ["text"]},
                     "limit": {"context": 1048576, "output": 8192},
                     "cost": {"input": 0.30, "output": 2.50},
+                },
+                "gemini-3.1-pro-preview": {
+                    "id": "gemini-3.1-pro-preview",
+                    "name": "Gemini 3.1 Pro Preview",
+                    "tool_call": True,
+                    "structured_output": True,
+                    "modalities": {"input": ["text"], "output": ["text"]},
+                    "limit": {"context": 1048576, "output": 8192},
+                    "cost": {"input": 1.25, "output": 10.00},
+                },
+                "gemini-3-pro-preview": {
+                    "id": "gemini-3-pro-preview",
+                    "name": "Gemini 3 Pro Preview",
+                    "tool_call": True,
+                    "structured_output": True,
+                    "modalities": {"input": ["text"], "output": ["text"]},
+                    "limit": {"context": 1048576, "output": 8192},
+                    "cost": {"input": 1.25, "output": 10.00},
                 }
             },
         },

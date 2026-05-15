@@ -87,6 +87,7 @@ def test_google_browser_oauth_flow_uses_pkce_and_stores_client_metadata(monkeypa
 def test_google_oauth_loopback_callback_can_be_polled(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("CHIMERA_MEMORY_GOOGLE_OAUTH_CLIENT_ID", "123456789012-testclientidvalue.apps.googleusercontent.com")
     monkeypatch.setenv("CHIMERA_MEMORY_GOOGLE_OAUTH_CLIENT_SECRET", "TEST_ONLY_GOOGLE_CLIENT_SECRET")
+    monkeypatch.setenv("CHIMERA_MEMORY_GOOGLE_OAUTH_CALLBACK_PORT", "0")
     store = MemoryEnhancementOAuthStore(tmp_path / "auth.json")
     started = start_memory_enhancement_oauth_flow("google", store=store)
     flow_state = _flow_state(tmp_path, started["flow_id"])

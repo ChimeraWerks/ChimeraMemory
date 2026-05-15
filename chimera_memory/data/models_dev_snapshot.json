@@ -71,9 +71,9 @@
     "env": ["GOOGLE_GENERATIVE_AI_API_KEY", "GEMINI_API_KEY"],
     "doc": "https://ai.google.dev/api",
     "models": {
-      "gemini-flash-latest": {
-        "id": "gemini-flash-latest",
-        "name": "Gemini Flash Latest",
+      "gemini-3-flash-preview": {
+        "id": "gemini-3-flash-preview",
+        "name": "Gemini 3 Flash Preview",
         "family": "gemini-flash",
         "tool_call": true,
         "structured_output": true,
@@ -81,15 +81,25 @@
         "limit": {"context": 1048576, "output": 8192},
         "cost": {"input": 0.3, "output": 2.5}
       },
-      "gemini-2.5-flash": {
-        "id": "gemini-2.5-flash",
-        "name": "Gemini 2.5 Flash",
-        "family": "gemini-flash",
+      "gemini-3.1-pro-preview": {
+        "id": "gemini-3.1-pro-preview",
+        "name": "Gemini 3.1 Pro Preview",
+        "family": "gemini-pro",
         "tool_call": true,
         "structured_output": true,
         "modalities": {"input": ["text"], "output": ["text"]},
         "limit": {"context": 1048576, "output": 8192},
-        "cost": {"input": 0.3, "output": 2.5}
+        "cost": {"input": 1.25, "output": 10.0}
+      },
+      "gemini-3-pro-preview": {
+        "id": "gemini-3-pro-preview",
+        "name": "Gemini 3 Pro Preview",
+        "family": "gemini-pro",
+        "tool_call": true,
+        "structured_output": true,
+        "modalities": {"input": ["text"], "output": ["text"]},
+        "limit": {"context": 1048576, "output": 8192},
+        "cost": {"input": 1.25, "output": 10.0}
       }
     }
   },

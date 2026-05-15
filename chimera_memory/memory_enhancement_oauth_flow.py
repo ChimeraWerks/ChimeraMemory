@@ -270,6 +270,7 @@ def submit_memory_enhancement_oauth_flow(
             headers={"Accept": "application/json"},
             opener=opener,
             timeout_seconds=20,
+            operation="authorization",
         )
         credential = _credential_from_authorization_payload(
             state,
@@ -360,6 +361,7 @@ def poll_memory_enhancement_oauth_flow(
         headers={"Accept": "application/json"},
         opener=opener,
         timeout_seconds=20,
+        operation="authorization",
     )
     credential = _credential_from_authorization_payload(
         state,
@@ -675,12 +677,23 @@ def _run_google_callback_server(store_path: str, flow_id: str, ready_path: str) 
 def _bind_google_callback_server(
     handler_cls: type[http.server.BaseHTTPRequestHandler],
 ) -> tuple[http.server.HTTPServer, int]:
+    preferred_port = _google_callback_preferred_port()
     try:
-        server = http.server.HTTPServer((GOOGLE_OAUTH_REDIRECT_HOST, GOOGLE_OAUTH_REDIRECT_PORT), handler_cls)
-        return server, GOOGLE_OAUTH_REDIRECT_PORT
+        server = http.server.HTTPServer((GOOGLE_OAUTH_REDIRECT_HOST, preferred_port), handler_cls)
+        return server, int(server.server_address[1])
     except OSError:
         server = http.server.HTTPServer((GOOGLE_OAUTH_REDIRECT_HOST, 0), handler_cls)
         return server, int(server.server_address[1])
+
+
+def _google_callback_preferred_port() -> int:
+    raw = os.environ.get("CHIMERA_MEMORY_GOOGLE_OAUTH_CALLBACK_PORT", "").strip()
+    if raw:
+        try:
+            return max(0, min(65535, int(raw)))
+        except ValueError:
+            return GOOGLE_OAUTH_REDIRECT_PORT
+    return GOOGLE_OAUTH_REDIRECT_PORT
 
 
 def _google_callback_handler(

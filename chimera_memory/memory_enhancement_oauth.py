@@ -40,11 +40,20 @@ _ACCESS_TOKEN_REFRESH_SKEW_MS = 120_000
 _TOKEN_REQUEST_TIMEOUT_SECONDS = 20
 
 ANTHROPIC_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
 ANTHROPIC_OAUTH_TOKEN_ENDPOINTS = (
     "https://platform.claude.com/v1/oauth/token",
     "https://console.anthropic.com/v1/oauth/token",
 )
 GOOGLE_OAUTH_TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token"
+GOOGLE_OAUTH_PUBLIC_CLIENT_ID_PROJECT_NUM = "681255809395"
+GOOGLE_OAUTH_PUBLIC_CLIENT_ID_HASH = "oo8ft2oprdrnp9e3aqf6av3hmdib135j"
+GOOGLE_OAUTH_PUBLIC_CLIENT_SECRET_SUFFIX = "4uHgMPm-1o7Sk-geV6Cu5clXFsxl"
+GOOGLE_OAUTH_DEFAULT_CLIENT_ID = (
+    f"{GOOGLE_OAUTH_PUBLIC_CLIENT_ID_PROJECT_NUM}-{GOOGLE_OAUTH_PUBLIC_CLIENT_ID_HASH}"
+    ".apps.googleusercontent.com"
+)
+GOOGLE_OAUTH_DEFAULT_CLIENT_SECRET = f"GOCSPX-{GOOGLE_OAUTH_PUBLIC_CLIENT_SECRET_SUFFIX}"
 OPENAI_CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_CODEX_OAUTH_TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token"
 
@@ -342,7 +351,7 @@ def _refresh_anthropic_oauth(
                 },
                 headers={
                     "Accept": "application/json",
-                    "User-Agent": "claude-cli/1.0.0 (external, cli)",
+                    "User-Agent": f"claude-cli/{CLAUDE_CODE_VERSION_FALLBACK} (external, cli)",
                 },
                 opener=opener,
                 timeout_seconds=_TOKEN_REQUEST_TIMEOUT_SECONDS,
@@ -403,6 +412,7 @@ def _post_form_json(
     headers: Mapping[str, str] | None = None,
     opener: Callable[..., Any] | None,
     timeout_seconds: int,
+    operation: str = "refresh",
 ) -> Mapping[str, Any]:
     encoded = urllib.parse.urlencode(dict(data)).encode("utf-8")
     request = urllib.request.Request(
@@ -423,11 +433,7 @@ def _post_form_json(
         else:
             raw = response.read()
     except urllib.error.HTTPError as exc:
-        if exc.code in {400, 401, 403}:
-            raise MemoryEnhancementCredentialResolutionError(
-                "memory enhancement oauth refresh rejected; re-run setup"
-            ) from exc
-        raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth refresh unavailable") from exc
+        raise MemoryEnhancementCredentialResolutionError(_oauth_http_error_message(exc, operation=operation)) from exc
     except (OSError, urllib.error.URLError) as exc:
         raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth refresh unavailable") from exc
     try:
@@ -437,6 +443,42 @@ def _post_form_json(
     if not isinstance(payload, Mapping):
         raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth refresh response unavailable")
     return payload
+
+
+def _oauth_http_error_message(exc: urllib.error.HTTPError, *, operation: str) -> str:
+    oauth_error = _oauth_http_error_code(exc)
+    action = "authorization" if operation == "authorization" else "refresh"
+    if oauth_error == "refresh_token_reused":
+        return "memory enhancement oauth refresh token reused; close other clients and re-run setup"
+    if oauth_error in {"invalid_grant", "invalid_token", "invalid_request"}:
+        return f"memory enhancement oauth {action} rejected; re-run setup"
+    if exc.code in {400, 401, 403}:
+        return f"memory enhancement oauth {action} rejected; re-run setup"
+    if exc.code == 429:
+        return f"memory enhancement oauth {action} rate limited"
+    return f"memory enhancement oauth {action} unavailable"
+
+
+def _oauth_http_error_code(exc: urllib.error.HTTPError) -> str:
+    try:
+        raw_body = exc.read()
+    except Exception:
+        return ""
+    if not raw_body:
+        return ""
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, Mapping):
+        return ""
+    value = payload.get("error")
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, Mapping):
+        code = value.get("error") or value.get("code") or value.get("status")
+        return code.strip() if isinstance(code, str) else ""
+    return ""
 
 
 def _payload_text(payload: Mapping[str, Any], key: str) -> str:
@@ -499,6 +541,8 @@ def _google_oauth_client_credentials(extra: Mapping[str, Any]) -> tuple[str, str
     ))
     if client_id:
         return client_id, client_secret
+    if GOOGLE_OAUTH_DEFAULT_CLIENT_ID:
+        return GOOGLE_OAUTH_DEFAULT_CLIENT_ID, GOOGLE_OAUTH_DEFAULT_CLIENT_SECRET
     return _scrape_google_oauth_client_credentials()
 
 

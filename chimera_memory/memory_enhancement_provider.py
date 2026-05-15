@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .memory_enhancement import ENHANCEMENT_SCHEMA_VERSION
+from .memory_enhancement_google import GOOGLE_CLOUDCODE_MEMORY_DEFAULT_MODEL
 
 PROVIDER_IDS = {
     "openai",
@@ -31,7 +32,7 @@ DEFAULT_PROVIDER_ORDER = ("openai", "anthropic", "google", "openrouter", "ollama
 PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
-    "google": "gemini-2.5-flash",
+    "google": GOOGLE_CLOUDCODE_MEMORY_DEFAULT_MODEL,
     "openrouter": "openai/gpt-4o-mini",
     "ollama": "gemma2:2b",
     "lmstudio": "openai/gpt-oss-20b",
@@ -144,6 +145,8 @@ def parse_provider_order(raw: str | None) -> tuple[str, ...]:
 
 
 def _provider_default_model(provider_id: str, env: Mapping[str, str]) -> str:
+    if provider_id == "google":
+        return PROVIDER_DEFAULT_MODELS[provider_id]
     if not _env_bool(env, "CHIMERA_MEMORY_ENHANCEMENT_USE_MODELS_DEV_CATALOG", default=False):
         return PROVIDER_DEFAULT_MODELS[provider_id]
     if provider_id not in {"openai", "anthropic", "google", "openrouter"}:

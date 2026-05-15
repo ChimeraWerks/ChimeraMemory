@@ -20,6 +20,7 @@ from .memory_enhancement_oauth import (
     MemoryEnhancementOAuthCredential,
     OAuthMemoryEnhancementCredentialResolver,
 )
+from .memory_enhancement_google import GOOGLE_CLOUDCODE_MEMORY_DEFAULT_MODEL, google_cloudcode_model_candidates
 
 
 OPENAI_CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
@@ -31,11 +32,20 @@ OPENAI_CODEX_HEADERS = {
     "User-Agent": "codex_cli_rs/0.0.0 (ChimeraMemory)",
     "originator": "codex_cli_rs",
 }
+ANTHROPIC_COMMON_BETAS = (
+    "interleaved-thinking-2025-05-14",
+    "fine-grained-tool-streaming-2025-05-14",
+)
+ANTHROPIC_OAUTH_ONLY_BETAS = (
+    "claude-code-20250219",
+    "oauth-2025-04-20",
+)
+CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
 ANTHROPIC_OAUTH_HEADERS = {
     "anthropic-version": "2023-06-01",
-    "anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
+    "anthropic-beta": ",".join((*ANTHROPIC_COMMON_BETAS, *ANTHROPIC_OAUTH_ONLY_BETAS)),
     "x-app": "cli",
-    "user-agent": "claude-cli/1.0.0 (external, cli)",
+    "user-agent": f"claude-cli/{CLAUDE_CODE_VERSION_FALLBACK} (external, cli)",
 }
 GOOGLE_CLOUDCODE_HEADERS = {
     "User-Agent": "hermes-agent (gemini-cli-compat)",
@@ -86,7 +96,18 @@ class ResolvingMemoryEnhancementProviderClient:
         if provider_id == "openai" and credential.transport == "openai_codex":
             return _invoke_openai_codex(invocation, provider, credential, opener=self._opener)
         if provider_id == "anthropic" and credential.transport == "anthropic_oauth":
-            return _invoke_anthropic_oauth(invocation, provider, credential, opener=self._opener)
+            try:
+                return _invoke_anthropic_oauth(invocation, provider, credential, opener=self._opener)
+            except RuntimeError as exc:
+                if str(exc) != "memory enhancement provider auth failed":
+                    raise
+                ref = MemoryEnhancementCredentialRef.parse(_credential_ref(provider))
+                refreshed = self._oauth_resolver.resolve_oauth(
+                    ref,
+                    provider_id="anthropic",
+                    force_refresh=True,
+                )
+                return _invoke_anthropic_oauth(invocation, provider, refreshed, opener=self._opener)
         if provider_id == "google" and credential.transport == "google_cloudcode":
             return _invoke_google_cloudcode(invocation, provider, credential, opener=self._opener)
         raise RuntimeError("memory enhancement provider oauth transport unavailable")
@@ -357,9 +378,11 @@ def _invoke_google_cloudcode(
 ) -> Mapping[str, Any]:
     model_client = _memory_model_client_module()
     budget = model_client._budget(invocation)
+    model_candidates = google_cloudcode_model_candidates(provider["model"])
+    discovery_provider = {**dict(provider), "model": GOOGLE_CLOUDCODE_MEMORY_DEFAULT_MODEL}
     project_id = _google_cloudcode_project_id(
         credential,
-        provider=provider,
+        provider=discovery_provider,
         model_client=model_client,
         opener=opener,
         timeout_seconds=budget.timeout_seconds,
@@ -373,24 +396,36 @@ def _invoke_google_cloudcode(
             "responseMimeType": "application/json",
         },
     }
-    payload = {
-        "project": project_id,
-        "model": provider["model"],
-        "user_prompt_id": str(uuid.uuid4()),
-        "request": inner_request,
-    }
-    response = model_client._post_json(
-        _google_cloudcode_endpoint(provider, credential, "generateContent"),
-        payload,
-        {
-            "Authorization": f"Bearer {credential.access_token}",
-            "x-activity-request-id": str(uuid.uuid4()),
-            **GOOGLE_CLOUDCODE_HEADERS,
-        },
-        opener=opener or model_client.urllib.request.urlopen,
-        timeout_seconds=budget.timeout_seconds,
-    )
-    return _metadata_from_google_cloudcode_response(response, model_client)
+    last_error: RuntimeError | None = None
+    for model in model_candidates:
+        model_provider = {**dict(provider), "model": model}
+        payload = {
+            "project": project_id,
+            "model": model,
+            "user_prompt_id": str(uuid.uuid4()),
+            "request": inner_request,
+        }
+        try:
+            response = _post_google_cloudcode_json(
+                _google_cloudcode_endpoint(model_provider, credential, "generateContent"),
+                payload,
+                {
+                    "Authorization": f"Bearer {credential.access_token}",
+                    "x-activity-request-id": str(uuid.uuid4()),
+                    **GOOGLE_CLOUDCODE_HEADERS,
+                },
+                opener=opener or model_client.urllib.request.urlopen,
+                timeout_seconds=budget.timeout_seconds,
+                model_client=model_client,
+            )
+            return _metadata_from_google_cloudcode_response(response, model_client)
+        except RuntimeError as exc:
+            if not _google_cloudcode_model_retryable(str(exc)):
+                raise
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("memory enhancement provider unavailable")
 
 
 def _google_cloudcode_project_id(
@@ -408,12 +443,13 @@ def _google_cloudcode_project_id(
         "x-activity-request-id": str(uuid.uuid4()),
         **_google_cloudcode_discovery_headers(provider),
     }
-    load_response = model_client._post_json(
+    load_response = _post_google_cloudcode_json(
         _google_cloudcode_endpoint(provider, credential, "loadCodeAssist"),
         _google_cloudcode_load_request(""),
         headers,
         opener=opener or model_client.urllib.request.urlopen,
         timeout_seconds=timeout_seconds,
+        model_client=model_client,
     )
     discovered = _google_cloudcode_project_from_response(load_response)
     if discovered:
@@ -429,12 +465,13 @@ def _google_cloudcode_project_id(
     }
     deadline = time.monotonic() + max(1, min(int(timeout_seconds), 30))
     while True:
-        onboard_response = model_client._post_json(
+        onboard_response = _post_google_cloudcode_json(
             _google_cloudcode_endpoint(provider, credential, "onboardUser"),
             onboard_request,
             headers,
             opener=opener or model_client.urllib.request.urlopen,
             timeout_seconds=timeout_seconds,
+            model_client=model_client,
         )
         discovered = _google_cloudcode_project_from_response(onboard_response)
         if discovered:
@@ -445,12 +482,13 @@ def _google_cloudcode_project_id(
         if time.monotonic() >= deadline:
             break
         time.sleep(1)
-        onboard_response = model_client._post_json(
+        onboard_response = _post_google_cloudcode_json(
             _google_cloudcode_operation_endpoint(credential, operation_name),
             {},
             headers,
             opener=opener or model_client.urllib.request.urlopen,
             timeout_seconds=timeout_seconds,
+            model_client=model_client,
         )
         discovered = _google_cloudcode_project_from_response(onboard_response)
         if discovered:
@@ -461,6 +499,104 @@ def _google_cloudcode_project_id(
             break
         time.sleep(1)
     raise RuntimeError("memory enhancement google project unavailable")
+
+
+def _post_google_cloudcode_json(
+    endpoint: str,
+    payload: Mapping[str, Any],
+    headers: Mapping[str, str],
+    *,
+    opener: Callable[..., Any],
+    timeout_seconds: int,
+    model_client: Any,
+) -> Mapping[str, Any]:
+    if not hasattr(model_client, "_validate_endpoint"):
+        return model_client._post_json(
+            endpoint,
+            payload,
+            headers,
+            opener=opener,
+            timeout_seconds=timeout_seconds,
+        )
+    safe_endpoint = model_client._validate_endpoint(endpoint)
+    request = model_client.urllib.request.Request(
+        safe_endpoint,
+        data=json.dumps(dict(payload), separators=(",", ":"), sort_keys=True).encode("utf-8"),
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            **dict(headers),
+        },
+        method="POST",
+    )
+    try:
+        with opener(request, timeout=timeout_seconds) as response:
+            raw_body = response.read()
+    except model_client.urllib.error.HTTPError as exc:
+        raise RuntimeError(_google_cloudcode_failure_category(exc, model_client)) from exc
+    except model_client.urllib.error.URLError as exc:
+        raise RuntimeError("memory enhancement provider unavailable") from exc
+    except TimeoutError as exc:
+        raise RuntimeError("memory enhancement provider timeout") from exc
+    try:
+        decoded = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("memory enhancement provider returned invalid JSON") from exc
+    if not isinstance(decoded, dict):
+        raise RuntimeError("memory enhancement provider returned invalid JSON")
+    return decoded
+
+
+def _google_cloudcode_failure_category(exc: Any, model_client: Any) -> str:
+    category = model_client._http_failure_category(exc.code)
+    reason = _google_cloudcode_http_error_reason(exc)
+    return f"{category} ({reason})" if reason else category
+
+
+def _google_cloudcode_http_error_reason(exc: Any) -> str:
+    try:
+        raw_body = exc.read()
+    except Exception:
+        raw_body = b""
+    if not raw_body:
+        return ""
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return f"google_http_{int(exc.code)}"
+    error = payload.get("error") if isinstance(payload, Mapping) else {}
+    if not isinstance(error, Mapping):
+        return f"google_http_{int(exc.code)}"
+    status = _safe_google_error_token(error.get("status"))
+    reason = ""
+    details = error.get("details") if isinstance(error.get("details"), list) else []
+    for detail in details:
+        if isinstance(detail, Mapping):
+            reason = _safe_google_error_token(detail.get("reason"))
+            if reason:
+                break
+    parts = [f"google_http_{int(exc.code)}"]
+    if status:
+        parts.append(status)
+    if reason and reason != status:
+        parts.append(reason)
+    return "_".join(parts)
+
+
+def _safe_google_error_token(value: object) -> str:
+    text = str(value or "").strip().upper()
+    return "".join(ch if ch.isalnum() else "_" for ch in text)[:80].strip("_")
+
+
+def _google_cloudcode_model_retryable(message: str) -> bool:
+    text = message.lower()
+    if "auth failed" in text or "rate limited" in text or "timeout" in text:
+        return False
+    return (
+        "provider unavailable" in text
+        or "provider rejected content" in text
+        or "returned invalid json" in text
+    )
 
 
 def _google_cloudcode_load_request(project_id: str) -> dict[str, Any]:

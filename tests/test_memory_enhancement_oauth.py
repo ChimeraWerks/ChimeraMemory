@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import io
+import urllib.error
 import urllib.parse
 from pathlib import Path
 
@@ -15,6 +17,7 @@ from chimera_memory.memory_enhancement_oauth import (
     MemoryEnhancementOAuthCredential,
     MemoryEnhancementOAuthStore,
     OAuthMemoryEnhancementCredentialResolver,
+    _google_oauth_client_credentials,
     refresh_memory_enhancement_oauth_credential,
     resolve_oauth_store_path,
 )
@@ -206,6 +209,44 @@ def test_refresh_google_oauth_uses_credential_client_metadata_and_preserves_proj
     assert refreshed.access_token == "TEST_ONLY_NEW_GOOGLE_ACCESS"
     assert refreshed.refresh_token == "TEST_ONLY_NEW_GOOGLE_REFRESH"
     assert refreshed.project_id == "project-test"
+
+
+def test_google_oauth_client_credentials_have_hermes_public_defaults(monkeypatch):
+    monkeypatch.delenv("CHIMERA_MEMORY_GOOGLE_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("CHIMERA_MEMORY_GOOGLE_OAUTH_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("PERSONIFYAGENTS_GOOGLE_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("PERSONIFYAGENTS_GOOGLE_OAUTH_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("HERMES_GEMINI_CLIENT_ID", raising=False)
+    monkeypatch.delenv("HERMES_GEMINI_CLIENT_SECRET", raising=False)
+
+    client_id, client_secret = _google_oauth_client_credentials({})
+
+    assert client_id.endswith(".apps.googleusercontent.com")
+    assert client_secret.startswith("GOCSPX-")
+
+
+def test_refresh_error_mapping_distinguishes_reused_refresh_token():
+    def opener(request, *, timeout):
+        raise urllib.error.HTTPError(
+            request.full_url,
+            400,
+            "bad request",
+            hdrs={},
+            fp=io.BytesIO(json.dumps({"error": "refresh_token_reused"}).encode("utf-8")),
+        )
+
+    credential = MemoryEnhancementOAuthCredential(
+        name="openai-memory",
+        provider_id="openai",
+        source="browser:openai_device",
+        access_token="TEST_ONLY_OLD_OPENAI_ACCESS",
+        refresh_token="TEST_ONLY_OLD_OPENAI_REFRESH",
+        expires_at_ms=1,
+        transport="openai_codex",
+    )
+
+    with pytest.raises(MemoryEnhancementCredentialResolutionError, match="token reused"):
+        refresh_memory_enhancement_oauth_credential(credential, opener=opener)
 
 
 def test_oauth_store_rejects_ambiguous_refs(tmp_path: Path):
