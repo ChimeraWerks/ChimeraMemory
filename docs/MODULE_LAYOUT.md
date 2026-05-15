@@ -230,6 +230,22 @@ Rules:
 - The facade owns indexing written files, building pyramid summaries, and audit completion events.
 - Keep parser behavior tolerant. Perplexity export shapes are less stable than Gmail mbox or ChatGPT conversations.json.
 
+### `memory_import_grok.py`
+
+Owns Grok export ingestion scaffolding:
+
+- markdown/text/JSON/JSONL parsing
+- conversation/message JSON flattening
+- governed markdown planning
+- safe file writing under `memory/imports/grok/`
+
+Rules:
+
+- Imported Grok documents are imported provenance but pending review and evidence-only by default.
+- Import helpers must not import `memory.py`.
+- The facade owns indexing written files, building pyramid summaries, and audit completion events.
+- Keep parser behavior tolerant. Grok export shapes are less stable than Gmail mbox or ChatGPT conversations.json.
+
 ### `memory_profile_export.py`
 
 Owns deterministic portable context exports from reviewed memory:
@@ -393,6 +409,12 @@ memory_import_perplexity.py
   imports memory_observability.py
   imports sanitizer.py
 
+memory_import_grok.py
+  imports memory_auto_capture.py
+  imports memory_frontmatter.py
+  imports memory_observability.py
+  imports sanitizer.py
+
 memory_profile_export.py
   imports memory_frontmatter.py
   imports memory_observability.py
@@ -432,6 +454,7 @@ Avoid:
 - Obsidian import: `tests/test_memory_import_obsidian.py`
 - Gmail import: `tests/test_memory_import_gmail.py`
 - Perplexity import: `tests/test_memory_import_perplexity.py`
+- Grok import: `tests/test_memory_import_grok.py`
 - Portable profile export: `tests/test_memory_profile_export.py`
 - Sidecar contract: `tests/test_memory_enhancement.py`
 - Provider policy: `tests/test_memory_enhancement_provider.py`
