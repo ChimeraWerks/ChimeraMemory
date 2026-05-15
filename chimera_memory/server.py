@@ -918,6 +918,52 @@ def create_server():
         )
 
     @server.tool()
+    def memory_import_obsidian_vault(
+        vault_path: str,
+        persona: str = "",
+        limit: int = 200,
+        write: bool = False,
+        force: bool = False,
+        build_pyramid: bool = True,
+    ) -> str:
+        """Plan or import Obsidian markdown notes into governed local memory files."""
+        _ensure_memory_indexed()
+        from .memory import memory_import_obsidian_vault as _import_obsidian
+
+        selected_persona = (persona or os.environ.get("TRANSCRIPT_PERSONA") or "").strip()
+        if not selected_persona:
+            return "Obsidian import failed: persona is required"
+        personas_dir = Path(os.environ.get("CHIMERA_PERSONAS_DIR", "C:/Github/ChimeraPersonas/personas"))
+        result = _import_obsidian(
+            _get_memory_conn(),
+            personas_dir,
+            vault_path=vault_path,
+            persona=selected_persona,
+            limit=limit,
+            write=write,
+            force=force,
+            build_pyramid=build_pyramid,
+            actor="mcp",
+        )
+        if not result.get("ok"):
+            return f"Obsidian import failed: {result.get('error', 'unknown error')}"
+        if not write:
+            summary = result.get("summary", {})
+            lines = [f"Obsidian import plan: {summary.get('plan_count', 0)} note(s) from {vault_path}"]
+            for plan in result.get("plans", [])[: max(0, min(limit, 20))]:
+                lines.append(
+                    f"- {plan.get('relative_path')} source={plan.get('source_path')} "
+                    f"title={plan.get('title')}"
+                )
+            return "\n".join(lines)
+        summary = result.get("summary", {})
+        return (
+            f"Obsidian import complete: written={summary.get('written_count', 0)} "
+            f"skipped={summary.get('skipped_count', 0)} failed={summary.get('failed_count', 0)} "
+            f"pyramid_built={summary.get('pyramid_built_count', 0)}"
+        )
+
+    @server.tool()
     def memory_profile_export(
         output_dir: str = "",
         persona: str = "",

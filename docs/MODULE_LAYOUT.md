@@ -182,6 +182,22 @@ Rules:
 - The facade owns indexing written files, building pyramid summaries, and audit completion events.
 - Keep parser behavior tolerant. ChatGPT export shape changes over time.
 
+### `memory_import_obsidian.py`
+
+Owns Obsidian vault ingestion scaffolding:
+
+- markdown note loading from a vault directory or zip export
+- frontmatter/body parsing for source notes
+- governed markdown planning
+- safe file writing under `memory/imports/obsidian/`
+
+Rules:
+
+- Imported Obsidian notes are imported provenance but pending review and evidence-only by default.
+- Import helpers must not import `memory.py`.
+- The facade owns indexing written files, building pyramid summaries, and audit completion events.
+- Skip Obsidian internals such as `.obsidian/`.
+
 ### `memory_profile_export.py`
 
 Owns deterministic portable context exports from reviewed memory:
@@ -328,6 +344,12 @@ memory_import_chatgpt.py
   imports memory_observability.py
   imports sanitizer.py
 
+memory_import_obsidian.py
+  imports memory_auto_capture.py
+  imports memory_frontmatter.py
+  imports memory_observability.py
+  imports sanitizer.py
+
 memory_profile_export.py
   imports memory_frontmatter.py
   imports memory_observability.py
@@ -364,6 +386,7 @@ Avoid:
 - Memory-file edges: `tests/test_memory_file_edges.py`
 - Pyramid summaries: `tests/test_memory_pyramid.py`
 - ChatGPT import: `tests/test_memory_import_chatgpt.py`
+- Obsidian import: `tests/test_memory_import_obsidian.py`
 - Portable profile export: `tests/test_memory_profile_export.py`
 - Sidecar contract: `tests/test_memory_enhancement.py`
 - Provider policy: `tests/test_memory_enhancement_provider.py`
