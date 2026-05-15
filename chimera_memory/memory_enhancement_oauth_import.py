@@ -34,6 +34,7 @@ def import_memory_enhancement_oauth_credential(
         credential = _import_openai(
             selected_source,
             name=name or OPENAI_OAUTH_NAME,
+            hermes_home=hermes_home,
             codex_auth_path=codex_auth_path,
         )
     elif provider == "anthropic":
@@ -60,15 +61,24 @@ def _import_openai(
     source: str,
     *,
     name: str,
+    hermes_home: str | Path | None,
     codex_auth_path: str | Path | None,
 ) -> MemoryEnhancementOAuthCredential:
-    if source not in {"auto", "codex_cli"}:
-        raise ProtocolValidationError("memory enhancement openai oauth import source unsupported")
-    raw = _read_json(_codex_auth_path(codex_auth_path))
-    credential = _openai_from_payload(name, raw)
-    if credential is None:
-        raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth credential unavailable")
-    return credential
+    attempts = ("codex_cli", "hermes_auth_pool") if source == "auto" else (source,)
+    for attempt in attempts:
+        if attempt == "codex_cli":
+            raw = _read_json(_codex_auth_path(codex_auth_path))
+            credential = _openai_from_payload(name, raw)
+            if credential is not None:
+                return credential
+        elif attempt == "hermes_auth_pool":
+            raw = _hermes_auth_pool_entry(hermes_home, "openai-codex")
+            credential = _openai_from_hermes_auth_pool(name, raw)
+            if credential is not None:
+                return credential
+        else:
+            raise ProtocolValidationError("memory enhancement openai oauth import source unsupported")
+    raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth credential unavailable")
 
 
 def _import_anthropic(
@@ -101,13 +111,21 @@ def _import_google(
     name: str,
     hermes_home: str | Path | None,
 ) -> MemoryEnhancementOAuthCredential:
-    if source not in {"auto", "hermes_google", "google_pkce"}:
-        raise ProtocolValidationError("memory enhancement google oauth import source unsupported")
-    raw = _read_json(_hermes_home(hermes_home) / "auth" / "google_oauth.json")
-    credential = _google_from_payload(name, raw)
-    if credential is None:
-        raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth credential unavailable")
-    return credential
+    attempts = ("hermes_google", "hermes_auth_pool") if source == "auto" else (source,)
+    for attempt in attempts:
+        if attempt in {"hermes_google", "google_pkce"}:
+            raw = _read_json(_hermes_home(hermes_home) / "auth" / "google_oauth.json")
+            credential = _google_from_payload(name, raw)
+            if credential is not None:
+                return credential
+        elif attempt == "hermes_auth_pool":
+            raw = _hermes_auth_pool_entry(hermes_home, "gemini")
+            credential = _google_from_hermes_auth_pool(name, raw)
+            if credential is not None:
+                return credential
+        else:
+            raise ProtocolValidationError("memory enhancement google oauth import source unsupported")
+    raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth credential unavailable")
 
 
 def _openai_from_payload(name: str, payload: Mapping[str, object] | None) -> MemoryEnhancementOAuthCredential | None:
@@ -126,6 +144,27 @@ def _openai_from_payload(name: str, payload: Mapping[str, object] | None) -> Mem
         transport="openai_codex",
         base_url=OPENAI_CODEX_BASE_URL,
         account_label=_first_text(tokens, ("account_id", "accountId")),
+    )
+
+
+def _openai_from_hermes_auth_pool(
+    name: str,
+    payload: Mapping[str, object] | None,
+) -> MemoryEnhancementOAuthCredential | None:
+    if not payload:
+        return None
+    access_token = _first_text(payload, ("access_token", "accessToken"))
+    if not access_token:
+        return None
+    return MemoryEnhancementOAuthCredential(
+        name=name,
+        provider_id="openai",
+        source="hermes_auth_pool",
+        access_token=access_token,
+        refresh_token=_first_text(payload, ("refresh_token", "refreshToken")),
+        transport="openai_codex",
+        base_url=_first_text(payload, ("base_url", "baseUrl")) or OPENAI_CODEX_BASE_URL,
+        account_label=_first_text(payload, ("label", "account_label", "accountLabel")),
     )
 
 
@@ -173,6 +212,28 @@ def _google_from_payload(name: str, payload: Mapping[str, object] | None) -> Mem
     )
 
 
+def _google_from_hermes_auth_pool(
+    name: str,
+    payload: Mapping[str, object] | None,
+) -> MemoryEnhancementOAuthCredential | None:
+    if not payload:
+        return None
+    access_token = _first_text(payload, ("access_token", "accessToken"))
+    if not access_token:
+        return None
+    return MemoryEnhancementOAuthCredential(
+        name=name,
+        provider_id="google",
+        source="hermes_auth_pool",
+        access_token=access_token,
+        refresh_token=_first_text(payload, ("refresh_token", "refreshToken")),
+        transport="google_cloudcode",
+        project_id=_first_text(payload, ("project_id", "projectId", "project")),
+        account_label=_first_text(payload, ("label", "account_label", "accountLabel")),
+        base_url=_first_text(payload, ("base_url", "baseUrl")),
+    )
+
+
 def _parse_google_refresh(value: str) -> tuple[str, str, str]:
     parts = value.split("|", 2)
     return (
@@ -188,6 +249,24 @@ def _read_json(path: Path) -> Mapping[str, object] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return payload if isinstance(payload, Mapping) else None
+
+
+def _hermes_auth_pool_entry(hermes_home: str | Path | None, pool_key: str) -> Mapping[str, object] | None:
+    payload = _read_json(_hermes_home(hermes_home) / "auth.json")
+    pool = payload.get("credential_pool") if isinstance(payload, Mapping) else {}
+    raw_entries = pool.get(pool_key) if isinstance(pool, Mapping) else None
+    entries: list[Mapping[str, object]]
+    if isinstance(raw_entries, Mapping):
+        entries = [raw_entries]
+    elif isinstance(raw_entries, list):
+        entries = [entry for entry in raw_entries if isinstance(entry, Mapping)]
+    else:
+        entries = []
+    entries.sort(key=lambda entry: _optional_int(entry.get("priority")) or 0)
+    for entry in entries:
+        if _first_text(entry, ("access_token", "accessToken")):
+            return entry
+    return None
 
 
 def _hermes_home(path: str | Path | None) -> Path:

@@ -229,6 +229,50 @@ def test_resolving_provider_client_uses_google_cloudcode_transport(monkeypatch, 
     assert "request" in payload
 
 
+def test_google_cloudcode_discovers_project_when_hermes_pool_credential_has_none(monkeypatch, tmp_path: Path):
+    captured: list[dict[str, object]] = []
+
+    def fake_post_json(endpoint, payload, headers, *, opener, timeout_seconds):
+        captured.append(
+            {
+                "endpoint": endpoint,
+                "payload": payload,
+                "headers": headers,
+                "timeout_seconds": timeout_seconds,
+            }
+        )
+        if endpoint.endswith(":loadCodeAssist"):
+            return {"cloudaicompanionProject": "project-discovered"}
+        return {"response": {"candidates": [{"content": {"parts": [{"text": json.dumps({"summary": "ok"})}]}}]}}
+
+    monkeypatch.setattr(
+        "chimera_memory.memory_enhancement_provider_sidecar._memory_model_client_module",
+        lambda: _fake_model_client(fake_post_json),
+    )
+    store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
+    store.upsert(
+        MemoryEnhancementOAuthCredential(
+            name="google-memory",
+            provider_id="google",
+            source="hermes_auth_pool",
+            access_token="TEST_ONLY_GOOGLE_ACCESS",
+            transport="google_cloudcode",
+            base_url="https://cloudcode-pa.googleapis.com",
+        )
+    )
+    client = ResolvingMemoryEnhancementProviderClient(
+        oauth_resolver=OAuthMemoryEnhancementCredentialResolver(store),
+        opener=lambda *_args, **_kwargs: None,
+    )
+
+    result = client.invoke(_invocation("google", "gemini-2.5-flash", "oauth:google-memory"))
+
+    assert result["summary"] == "ok"
+    assert captured[0]["endpoint"] == "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
+    assert captured[1]["endpoint"] == "https://cloudcode-pa.googleapis.com/v1internal:generateContent"
+    assert captured[1]["payload"]["project"] == "project-discovered"
+
+
 def _invocation(provider_id: str, model: str, credential_ref: str):
     return {
         "request_id": "req-test",

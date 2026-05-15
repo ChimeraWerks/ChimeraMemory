@@ -5,6 +5,7 @@ import base64
 import binascii
 import json
 import os
+import time
 import uuid
 from collections.abc import Callable, Mapping
 from typing import Any
@@ -275,10 +276,15 @@ def _invoke_google_cloudcode(
     *,
     opener: Callable[..., Any] | None,
 ) -> Mapping[str, Any]:
-    if not credential.project_id:
-        raise RuntimeError("memory enhancement google project unavailable")
     model_client = _memory_model_client_module()
     budget = model_client._budget(invocation)
+    project_id = _google_cloudcode_project_id(
+        credential,
+        provider=provider,
+        model_client=model_client,
+        opener=opener,
+        timeout_seconds=budget.timeout_seconds,
+    )
     inner_request = {
         "systemInstruction": {"parts": [{"text": model_client._system_prompt()}]},
         "contents": [{"role": "user", "parts": [{"text": model_client._user_prompt(invocation)}]}],
@@ -289,13 +295,13 @@ def _invoke_google_cloudcode(
         },
     }
     payload = {
-        "project": credential.project_id,
+        "project": project_id,
         "model": provider["model"],
         "user_prompt_id": str(uuid.uuid4()),
         "request": inner_request,
     }
     response = model_client._post_json(
-        provider.get("endpoint") or GOOGLE_CLOUDCODE_ENDPOINT,
+        _google_cloudcode_endpoint(provider, credential, "generateContent"),
         payload,
         {
             "Authorization": f"Bearer {credential.access_token}",
@@ -308,13 +314,108 @@ def _invoke_google_cloudcode(
     return _metadata_from_google_cloudcode_response(response, model_client)
 
 
+def _google_cloudcode_project_id(
+    credential: MemoryEnhancementOAuthCredential,
+    *,
+    provider: Mapping[str, str],
+    model_client: Any,
+    opener: Callable[..., Any] | None,
+    timeout_seconds: int,
+) -> str:
+    if credential.project_id:
+        return credential.project_id
+    initial_project = "default-project"
+    headers = {
+        "Authorization": f"Bearer {credential.access_token}",
+        **GOOGLE_CLOUDCODE_HEADERS,
+    }
+    load_response = model_client._post_json(
+        _google_cloudcode_endpoint(provider, credential, "loadCodeAssist"),
+        {
+            "cloudaicompanionProject": initial_project,
+            "metadata": {"duetProject": initial_project},
+        },
+        headers,
+        opener=opener or model_client.urllib.request.urlopen,
+        timeout_seconds=timeout_seconds,
+    )
+    discovered = _google_cloudcode_project_from_response(load_response)
+    if discovered:
+        return discovered
+
+    tier_id = _google_cloudcode_default_tier(load_response) or "free-tier"
+    onboard_request = {
+        "tierId": tier_id,
+        "cloudaicompanionProject": initial_project,
+    }
+    deadline = time.monotonic() + max(1, min(int(timeout_seconds), 30))
+    while True:
+        onboard_response = model_client._post_json(
+            _google_cloudcode_endpoint(provider, credential, "onboardUser"),
+            onboard_request,
+            headers,
+            opener=opener or model_client.urllib.request.urlopen,
+            timeout_seconds=timeout_seconds,
+        )
+        discovered = _google_cloudcode_project_from_response(onboard_response)
+        if discovered:
+            return discovered
+        if onboard_response.get("done") is True:
+            break
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(1)
+    raise RuntimeError("memory enhancement google project unavailable")
+
+
+def _google_cloudcode_endpoint(
+    provider: Mapping[str, str],
+    credential: MemoryEnhancementOAuthCredential,
+    method: str,
+) -> str:
+    explicit = str(provider.get("endpoint") or "").strip()
+    if explicit and method == "generateContent":
+        return explicit
+    base_url = credential.base_url.rstrip("/") if credential.base_url else GOOGLE_CLOUDCODE_ENDPOINT.rsplit("/", 1)[0]
+    return f"{base_url}/v1internal:{method}"
+
+
+def _google_cloudcode_project_from_response(response: Mapping[str, Any]) -> str:
+    direct = response.get("cloudaicompanionProject")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    if isinstance(direct, Mapping):
+        project_id = str(direct.get("id") or "").strip()
+        if project_id:
+            return project_id
+    nested = response.get("response") if isinstance(response.get("response"), Mapping) else {}
+    if isinstance(nested, Mapping):
+        nested_project = nested.get("cloudaicompanionProject")
+        if isinstance(nested_project, str) and nested_project.strip():
+            return nested_project.strip()
+        if isinstance(nested_project, Mapping):
+            project_id = str(nested_project.get("id") or "").strip()
+            if project_id:
+                return project_id
+    return ""
+
+
+def _google_cloudcode_default_tier(response: Mapping[str, Any]) -> str:
+    tiers = response.get("allowedTiers") if isinstance(response.get("allowedTiers"), list) else []
+    for tier in tiers:
+        if isinstance(tier, Mapping) and tier.get("isDefault") is True:
+            return str(tier.get("id") or "").strip()
+    return ""
+
+
 def _metadata_from_google_cloudcode_response(response: Mapping[str, Any], model_client: Any) -> Mapping[str, Any]:
     text = _google_response_text(response)
     return model_client._metadata_from_model_text(text)
 
 
 def _google_response_text(response: Mapping[str, Any]) -> str:
-    candidates = response.get("candidates") if isinstance(response.get("candidates"), list) else []
+    payload = response.get("response") if isinstance(response.get("response"), Mapping) else response
+    candidates = payload.get("candidates") if isinstance(payload.get("candidates"), list) else []
     first = candidates[0] if candidates and isinstance(candidates[0], Mapping) else {}
     content = first.get("content") if isinstance(first.get("content"), Mapping) else {}
     parts = content.get("parts") if isinstance(content.get("parts"), list) else []
