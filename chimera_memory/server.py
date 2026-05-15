@@ -918,6 +918,59 @@ def create_server():
         )
 
     @server.tool()
+    def memory_profile_export(
+        output_dir: str = "",
+        persona: str = "",
+        limit: int = 120,
+        include_restricted: bool = False,
+        include_archived: bool = False,
+        write: bool = False,
+    ) -> str:
+        """Plan or write portable USER/SOUL/HEARTBEAT context profile artifacts."""
+        _ensure_memory_indexed()
+        from .memory import memory_profile_export as _profile_export
+        from .memory_auto_capture import resolve_persona_root
+
+        selected_persona = (persona or os.environ.get("TRANSCRIPT_PERSONA") or "").strip()
+        selected_output = output_dir.strip()
+        if write and not selected_output:
+            personas_dir = Path(os.environ.get("CHIMERA_PERSONAS_DIR", "C:/Github/ChimeraPersonas/personas"))
+            persona_root = resolve_persona_root(personas_dir, selected_persona) if selected_persona else None
+            if persona_root is None:
+                return "Profile export failed: output_dir is required when no persona root can be resolved"
+            selected_output = str(persona_root / "exports" / "context-profile")
+
+        result = _profile_export(
+            _get_memory_conn(),
+            output_dir=selected_output or None,
+            persona=selected_persona or None,
+            limit=limit,
+            include_restricted=include_restricted,
+            include_archived=include_archived,
+            write=write,
+            actor="mcp",
+        )
+        if not result.get("ok"):
+            return f"Profile export failed: {result.get('error', 'unknown error')}"
+        summary = result.get("summary", {})
+        if write:
+            return (
+                f"Profile export written to {result.get('output_dir')}. "
+                f"records={summary.get('selected_count', 0)} files={summary.get('written_count', 0)}"
+            )
+        lines = [
+            "Profile export preview only. Re-run with write=true to persist.",
+            f"records: {summary.get('selected_count', 0)}",
+            "artifacts: USER.md, SOUL.md, HEARTBEAT.md, memory-profile.json",
+        ]
+        for row in result.get("records", [])[: max(0, min(limit, 20))]:
+            lines.append(
+                f"- {row.get('relative_path')} type={row.get('type')} "
+                f"review={row.get('review_status')} instruction={row.get('can_use_as_instruction')}"
+            )
+        return "\n".join(lines)
+
+    @server.tool()
     def memory_entity_index(persona: str | None = None, limit: int | None = None) -> str:
         """Build the local entity graph from indexed memory frontmatter."""
         _ensure_memory_indexed()

@@ -32,13 +32,13 @@ The OB1-inspired lift is implemented through Phase 5e dashboard and auto-capture
 - Phase 5a-c: sidecar contract, enhancement job queue, deterministic dry-run worker.
 - Phase 5d groundwork: provider priority, credential-reference boundary, budget caps, safe invocation envelope, bounded failure categories, and injected-client runner boundary.
 - Phase 5e usability: PWA memory dashboard, session-close auto-capture protocol, and live-retrieval dry-run checks.
-- Phase 6 partial: local entity graph schema, frontmatter/enhancement-derived entity indexing, shared-file connection queries, typed entity-edge query/upsert helpers, typed memory-file reasoning edges, temporal sweep helpers, deterministic pyramid summaries, and ChatGPT export import scaffolding.
+- Phase 6 partial: local entity graph schema, frontmatter/enhancement-derived entity indexing, shared-file connection queries, typed entity-edge query/upsert helpers, typed memory-file reasoning edges, temporal sweep helpers, deterministic pyramid summaries, ChatGPT export import scaffolding, and portable profile export.
 - Refactor: `memory.py` split into focused schema, governance, observability, review, enhancement queue, and frontmatter modules.
 
 Pending larger work:
 
 - Phase 5d remaining: real OAuth/model adapter for memory enhancement.
-- Phase 6 remaining: classifier integration for edge creation, additional import pipelines, portable profile export.
+- Phase 6 remaining: classifier integration for edge creation and additional import pipelines.
 
 See `docs/OB1_COMPARISON.md`, `docs/MEMORY_ENHANCEMENT_SIDECAR.md`, and `docs/MODULE_LAYOUT.md`.
 
@@ -57,6 +57,7 @@ Do not use `memory.py` as a dumping ground. It is now the facade/orchestration l
 - `chimera_memory/memory_file_edges.py`: typed reasoning edges between memory files (`supports`, `contradicts`, `supersedes`, etc.).
 - `chimera_memory/memory_pyramid.py`: deterministic multi-resolution summaries for long curated or imported memory files.
 - `chimera_memory/memory_import_chatgpt.py`: ChatGPT export parsing, governed markdown planning, and safe file writing.
+- `chimera_memory/memory_profile_export.py`: portable USER.md / SOUL.md / HEARTBEAT.md / JSON context export from reviewed memory.
 - `chimera_memory/memory_enhancement.py`: model-free sidecar request/response contract and untrusted-content wrapper.
 - `chimera_memory/memory_enhancement_provider.py`: provider priority, credential references, budget policy, safe invocation envelope, bounded failure categories.
 - `chimera_memory/memory_enhancement_runner.py`: provider-aware batch runner using an injected client protocol. No token storage or provider-specific network code.
@@ -76,6 +77,7 @@ Dependency direction matters:
 - Memory-file edge helpers may depend on observability audit emission.
 - Pyramid summary helpers may depend on frontmatter parsing, sanitizer helpers, and observability audit emission.
 - ChatGPT import helpers may depend on sanitizer helpers and persona-root resolution, but must not import the `memory.py` facade.
+- Profile export helpers may depend on frontmatter parsing, sanitizer helpers, and observability audit emission, but must not import the `memory.py` facade.
 - Enhancement provider policy may depend on the sidecar contract only.
 - Enhancement runner may depend on provider policy and enhancement queue helpers.
 - Enhancement queue may depend on frontmatter, observability, entity graph helpers, and the sidecar contract.

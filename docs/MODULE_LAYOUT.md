@@ -182,6 +182,23 @@ Rules:
 - The facade owns indexing written files, building pyramid summaries, and audit completion events.
 - Keep parser behavior tolerant. ChatGPT export shape changes over time.
 
+### `memory_profile_export.py`
+
+Owns deterministic portable context exports from reviewed memory:
+
+- USER.md / SOUL.md / HEARTBEAT.md rendering
+- structured `memory-profile.json` output
+- review/use-policy filtering
+- audit events for preview and write runs
+
+Rules:
+
+- Profile export is generated output. Do not modify source markdown files.
+- Export helpers may read source markdown bodies for sanitized excerpts.
+- Export helpers may call observability audit helpers.
+- Export helpers must not import `memory.py`.
+- Pending, rejected, disputed, and restricted memories stay out by default.
+
 ### `memory_enhancement.py`
 
 Owns the model-free sidecar contract:
@@ -311,6 +328,11 @@ memory_import_chatgpt.py
   imports memory_observability.py
   imports sanitizer.py
 
+memory_profile_export.py
+  imports memory_frontmatter.py
+  imports memory_observability.py
+  imports sanitizer.py
+
 memory_observability.py
   imports only stdlib
 
@@ -342,6 +364,7 @@ Avoid:
 - Memory-file edges: `tests/test_memory_file_edges.py`
 - Pyramid summaries: `tests/test_memory_pyramid.py`
 - ChatGPT import: `tests/test_memory_import_chatgpt.py`
+- Portable profile export: `tests/test_memory_profile_export.py`
 - Sidecar contract: `tests/test_memory_enhancement.py`
 - Provider policy: `tests/test_memory_enhancement_provider.py`
 - Provider runner: `tests/test_memory_enhancement_runner.py`

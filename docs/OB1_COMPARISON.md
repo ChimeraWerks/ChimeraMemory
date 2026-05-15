@@ -90,7 +90,7 @@ The lift path was developed jointly across two days of pair-research between Per
 
 19. **Import pipelines:** ChatGPT export, Perplexity, Obsidian vault, X/Twitter, Instagram, Google Activity, Grok, Gmail, Atom/Blogger. Each with parsing + dedup + embedding + ingestion. (OB1 ref: `recipes/*-import/`)
 
-20. **Portable context profile export:** Reviewed memory to USER.md / SOUL.md / HEARTBEAT.md / structured JSON. (OB1 ref: `recipes/bring-your-own-context/README.md:206-231`)
+20. **Portable context profile export:** Reviewed memory to USER.md / SOUL.md / HEARTBEAT.md / structured JSON. Shipped as deterministic reviewed-memory export. (OB1 ref: `recipes/bring-your-own-context/README.md:206-231`)
 
 ## What We Are NOT Lifting (Intentional Exclusions)
 
@@ -116,7 +116,7 @@ The lift items above are sequenced into six phases. Each phase ships independent
 - **Phase 3:** Safety spine. Governance fields (provenance, confidence, lifecycle_status, review_status, sensitivity_tier, use-policy) on `memory_files` + YAML frontmatter extensions. Shipped.
 - **Phase 4:** Writeback hygiene. content_fingerprint UNIQUE index, idempotency_key UNIQUE index, review-queue MCP tools. Shipped.
 - **Phase 5:** Sidecar implementation + usability layer. Contract, queue, deterministic dry-run worker, provider plumbing, PA supervisor rails, smoke harness, PA dashboard, auto-capture session-close protocol, and live-retrieval dry-run checks shipped. Live tokened provider verification remains.
-- **Phase 6:** Expansion. Local entity graph tables, frontmatter-derived indexing, enhancement-result entity linking, shared-file connection query, typed entity-edge query/upsert helpers, typed memory-file reasoning edges, temporal validity sweep helpers, deterministic pyramid summaries, and ChatGPT export import scaffolding shipped. Additional import pipelines and portable profile export remain.
+- **Phase 6:** Expansion. Local entity graph tables, frontmatter-derived indexing, enhancement-result entity linking, shared-file connection query, typed entity-edge query/upsert helpers, typed memory-file reasoning edges, temporal validity sweep helpers, deterministic pyramid summaries, ChatGPT export import scaffolding, and portable profile export shipped. Additional import pipelines remain.
 
 ## Memory-Enhancement Sidecar Design
 
