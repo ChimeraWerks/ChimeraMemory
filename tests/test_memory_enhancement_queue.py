@@ -8,6 +8,8 @@ from chimera_memory.memory import (
     memory_enhancement_claim_next,
     memory_enhancement_complete,
     memory_enhancement_enqueue,
+    memory_entity_connections,
+    memory_entity_query,
 )
 
 
@@ -92,6 +94,9 @@ def test_memory_enhancement_claim_and_complete_success(tmp_path: Path) -> None:
             "memory_type": "lesson",
             "summary": "Queue outputs stay review gated.",
             "topics": ["queue", "sidecar"],
+            "people": ["Charles"],
+            "projects": ["PA"],
+            "tools": ["Codex"],
             "confidence": 0.88,
         },
     )
@@ -103,11 +108,17 @@ def test_memory_enhancement_claim_and_complete_success(tmp_path: Path) -> None:
     assert job["result_payload"]["memory_type"] == "lesson"
     assert job["result_payload"]["review_status"] == "pending"
     assert job["result_payload"]["can_use_as_instruction"] is False
+    assert memory_entity_query(conn, query="Charles", entity_type="person")[0]["file_count"] == 1
+    assert memory_entity_query(conn, query="PA", entity_type="project")[0]["file_count"] == 1
+    connections = memory_entity_connections(conn, entity_name="Charles", entity_type="person")
+    assert {row["canonical_name"] for row in connections} == {"PA", "Codex", "queue", "sidecar"}
 
     events = memory_audit_query(conn, persona="asa")
     event_types = {event["event_type"] for event in events}
     assert "memory_enhancement_started" in event_types
     assert "memory_enhancement_completed" in event_types
+    completed_events = [event for event in events if event["event_type"] == "memory_enhancement_completed"]
+    assert completed_events[0]["payload"]["entities"] == {"link_count": 5, "edge_count": 10}
 
 
 def test_memory_enhancement_complete_failure_records_error(tmp_path: Path) -> None:

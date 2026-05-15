@@ -66,7 +66,7 @@ The lift path was developed jointly across two days of pair-research between Per
 
 8. **Temporal validity on relations:** `valid_from / valid_until / decay_weight` columns + partial index for current-only queries. Lets you say "this was true between dates X-Y" and decay relations over time. CM's decay is per-file importance, not per-relation. (OB1 ref: `schemas/typed-reasoning-edges/schema.sql:91-95, 122-130, 276-301`)
 
-9. **Entity extraction system:** OB1's `entities` + `edges` + `thought_entities` + `entity_extraction_queue` tables. Auto-extracted entities (people/projects/topics/tools/organizations/places) with canonical/normalized/aliases, evidence-bearing links to thoughts, async-processing queue with auto-queue trigger on `INSERT OR UPDATE`. CM now has the local SQLite graph tables, frontmatter-derived indexing, shared-file connection queries, and typed entity-edge upsert helpers; LLM extraction into those tables remains future work. (OB1 ref: `schemas/entity-extraction/schema.sql:32-178`)
+9. **Entity extraction system:** OB1's `entities` + `edges` + `thought_entities` + `entity_extraction_queue` tables. Auto-extracted entities (people/projects/topics/tools/organizations/places) with canonical/normalized/aliases, evidence-bearing links to thoughts, async-processing queue with auto-queue trigger on `INSERT OR UPDATE`. CM now has the local SQLite graph tables, frontmatter-derived indexing, enhancement-result entity linking, shared-file connection queries, and typed entity-edge upsert helpers; live-tokened LLM extraction into those tables remains future work. (OB1 ref: `schemas/entity-extraction/schema.sql:32-178`)
 
 10. **Prompt-injection-safe enrichment wrapper:** OB1's `wrapThoughtContent` wraps captured content as untrusted data before LLM extraction. Critical precondition for any LLM-driven enrichment in CM. (OB1 ref: `integrations/entity-extraction-worker/index.ts:166, 202`)
 
@@ -116,7 +116,7 @@ The lift items above are sequenced into six phases. Each phase ships independent
 - **Phase 3:** Safety spine. Governance fields (provenance, confidence, lifecycle_status, review_status, sensitivity_tier, use-policy) on `memory_files` + YAML frontmatter extensions. Shipped.
 - **Phase 4:** Writeback hygiene. content_fingerprint UNIQUE index, idempotency_key UNIQUE index, review-queue MCP tools. Shipped.
 - **Phase 5:** Sidecar implementation + usability layer. Contract, queue, deterministic dry-run worker, provider plumbing, PA supervisor rails, smoke harness, and PA dashboard shipped. Live tokened provider verification, auto-capture protocol, and live retrieval loop remain.
-- **Phase 6:** Expansion. Local entity graph tables, frontmatter-derived indexing, shared-file connection query, and typed entity-edge upsert helpers shipped. Richer typed-relation workflows, temporal validity UX, pyramid summaries, import pipelines, and portable profile export remain.
+- **Phase 6:** Expansion. Local entity graph tables, frontmatter-derived indexing, enhancement-result entity linking, shared-file connection query, and typed entity-edge upsert helpers shipped. Richer typed-relation workflows, temporal validity UX, pyramid summaries, import pipelines, and portable profile export remain.
 
 ## Memory-Enhancement Sidecar Design
 

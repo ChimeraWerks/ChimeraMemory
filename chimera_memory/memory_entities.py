@@ -6,6 +6,7 @@ import json
 import re
 import sqlite3
 import uuid
+from itertools import combinations
 from pathlib import Path
 
 from .memory_observability import record_memory_audit_event
@@ -612,3 +613,79 @@ def memory_file_entity_links(conn: sqlite3.Connection, *, file_path: str) -> lis
         entity["evidence"] = link_row[12]
         links.append(entity)
     return links
+
+
+def apply_enhancement_entities(
+    conn: sqlite3.Connection,
+    *,
+    file_id: int | None,
+    metadata: dict,
+    source: str = "enhancement",
+) -> dict:
+    """Populate entity links from normalized memory-enhancement metadata."""
+    if not file_id:
+        return {"link_count": 0, "edge_count": 0}
+    memory_row = conn.execute(
+        "SELECT id, persona, relative_path FROM memory_files WHERE id = ?",
+        (file_id,),
+    ).fetchone()
+    if memory_row is None:
+        return {"link_count": 0, "edge_count": 0}
+
+    field_specs = (
+        ("people", "person", "mentioned"),
+        ("projects", "project", "mentioned"),
+        ("tools", "tool", "mentioned"),
+        ("topics", "topic", "tag"),
+    )
+    linked_entities: list[dict] = []
+    seen_keys = set()
+    confidence = metadata.get("confidence")
+    confidence_value = float(confidence) if isinstance(confidence, (int, float)) else 1.0
+
+    for field, entity_type, role in field_specs:
+        raw_items = metadata.get(field)
+        items = raw_items if isinstance(raw_items, list) else []
+        for item in items:
+            name = str(item or "").strip()
+            key = (_clean_entity_type(entity_type), normalize_entity_name(name), role)
+            if not name or key in seen_keys:
+                continue
+            seen_keys.add(key)
+            entity = upsert_memory_entity(
+                conn,
+                entity_type=entity_type,
+                canonical_name=name,
+                confidence=confidence_value,
+                source=source,
+                metadata={"persona": memory_row[1], "field": field},
+                commit=False,
+            )
+            link_memory_file_entity(
+                conn,
+                file_id=int(memory_row[0]),
+                entity_row_id=int(entity["id"]),
+                mention_role=role,
+                confidence=confidence_value,
+                source=source,
+                evidence=f"enhancement:{field}",
+                metadata={"relative_path": memory_row[2], "field": field},
+                commit=False,
+            )
+            linked_entities.append(entity)
+
+    edge_count = 0
+    for source_entity, target_entity in combinations(linked_entities, 2):
+        upsert_memory_entity_edge(
+            conn,
+            source_entity_id=int(source_entity["id"]),
+            target_entity_id=int(target_entity["id"]),
+            relation_type="co_occurs_with",
+            confidence=confidence_value,
+            classifier_version="memory_enhancement.v1",
+            metadata={"file_id": file_id, "source": source},
+            commit=False,
+        )
+        edge_count += 1
+
+    return {"link_count": len(linked_entities), "edge_count": edge_count}

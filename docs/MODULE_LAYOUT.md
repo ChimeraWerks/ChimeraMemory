@@ -87,6 +87,7 @@ Owns the local entity graph lifted from OB1:
 - `memory_entity_edges`
 - entity normalization and deduplication
 - frontmatter-derived entity indexing
+- enhancement-derived entity linking
 - shared-file connection queries
 - typed entity-edge upserts
 
@@ -159,7 +160,7 @@ Owns enhancement job persistence:
 
 Rules:
 
-- Queue helpers may depend on `memory_frontmatter.py`, `memory_observability.py`, and `memory_enhancement.py`.
+- Queue helpers may depend on `memory_frontmatter.py`, `memory_observability.py`, `memory_entities.py`, and `memory_enhancement.py`.
 - Queue helpers must not import `memory.py`.
 - Completing a job does not directly promote generated metadata to instruction-grade.
 
@@ -190,6 +191,7 @@ memory.py facade
 memory_enhancement_queue.py
   imports memory_frontmatter.py
   imports memory_observability.py
+  imports memory_entities.py
   imports memory_enhancement.py
 
 memory_enhancement_provider.py

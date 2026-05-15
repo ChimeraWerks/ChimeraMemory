@@ -233,7 +233,7 @@ Each PA apply writes a backup, a receipt, and updates the install-state ledger .
 | `memory_query` | Structured filter by type, importance, status, tags, about field. |
 | `memory_guard` | Scan text for credentials, injection patterns, invisible unicode before persisting. |
 | `memory_gaps` | Graph analysis. Finds disconnected memory clusters and isolated files. |
-| `memory_entity_index` | Build the local entity graph from indexed memory frontmatter and tags. |
+| `memory_entity_index` | Build the local entity graph from indexed memory frontmatter and tags. Enhancement results can add links too. |
 | `memory_entity_query` | Query entities or show connections by shared memory-file evidence. |
 | `memory_reindex` | Force re-scan after bulk file changes. |
 | `memory_mark_failure` | Flag a memory that led to wrong advice. Penalizes its zone score. |

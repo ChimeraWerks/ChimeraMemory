@@ -25,6 +25,7 @@ from .memory_enhancement_queue import (
 from .memory_entities import (
     ENTITY_TYPES,
     MENTION_ROLES,
+    apply_enhancement_entities,
     memory_entity_connections,
     memory_entity_index,
     memory_entity_query,

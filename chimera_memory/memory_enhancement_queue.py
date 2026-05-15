@@ -11,6 +11,7 @@ from .memory_enhancement import (
     build_memory_enhancement_request,
     normalize_memory_enhancement_response,
 )
+from .memory_entities import apply_enhancement_entities
 from .memory_frontmatter import parse_frontmatter
 from .memory_observability import _json_object, _json_text, record_memory_audit_event
 
@@ -220,10 +221,17 @@ def memory_enhancement_complete(
         result_payload = normalize_memory_enhancement_response(
             response_payload if isinstance(response_payload, dict) else {}
         )
+        entity_result = apply_enhancement_entities(
+            conn,
+            file_id=job.get("file_id"),
+            metadata=result_payload,
+            source="enhancement",
+        )
         event_type = "memory_enhancement_completed"
         error_text = ""
     else:
         result_payload = response_payload if isinstance(response_payload, dict) else {}
+        entity_result = {"link_count": 0, "edge_count": 0}
         event_type = "memory_enhancement_failed" if status == "failed" else "memory_enhancement_skipped"
         error_text = error or ""
 
@@ -244,7 +252,7 @@ def memory_enhancement_complete(
         persona=job.get("persona"),
         target_kind="enhancement_job",
         target_id=job_id,
-        payload={"status": status, "file_id": job.get("file_id")},
+        payload={"status": status, "file_id": job.get("file_id"), "entities": entity_result},
         commit=False,
     )
     conn.commit()
