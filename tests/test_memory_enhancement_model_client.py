@@ -183,7 +183,7 @@ def test_google_provider_client_builds_generate_content_request() -> None:
 
     request = captured["request"]
     body = json.loads(request.data.decode("utf-8"))
-    assert request.full_url == GOOGLE_GENERATE_CONTENT_ENDPOINT.format(model="gemini-flash-latest")
+    assert request.full_url == GOOGLE_GENERATE_CONTENT_ENDPOINT.format(model="gemini-2.5-flash")
     assert request.get_header("X-goog-api-key") == fake_token
     assert body["generationConfig"]["responseMimeType"] == "application/json"
     assert body["generationConfig"]["temperature"] == 0

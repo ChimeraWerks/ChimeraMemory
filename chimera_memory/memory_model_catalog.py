@@ -41,8 +41,8 @@ _PREFERRED_MEMORY_MODELS: dict[str, tuple[str, ...]] = {
         "claude-3-haiku-20240307",
     ),
     "google": (
-        "gemini-flash-latest",
         "gemini-2.5-flash",
+        "gemini-flash-latest",
         "gemini-2.5-flash-lite",
         "gemini-1.5-flash",
     ),

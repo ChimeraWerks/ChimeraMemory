@@ -31,7 +31,7 @@ DEFAULT_PROVIDER_ORDER = ("openai", "anthropic", "google", "openrouter", "ollama
 PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
-    "google": "gemini-flash-latest",
+    "google": "gemini-2.5-flash",
     "openrouter": "openai/gpt-4o-mini",
     "ollama": "gemma2:2b",
     "lmstudio": "openai/gpt-oss-20b",

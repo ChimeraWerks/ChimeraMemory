@@ -71,6 +71,15 @@ def _catalog() -> dict:
             "id": "google",
             "name": "Google",
             "models": {
+                "gemini-2.5-flash": {
+                    "id": "gemini-2.5-flash",
+                    "name": "Gemini 2.5 Flash",
+                    "tool_call": True,
+                    "structured_output": True,
+                    "modalities": {"input": ["text"], "output": ["text"]},
+                    "limit": {"context": 1048576, "output": 8192},
+                    "cost": {"input": 0.3, "output": 2.5},
+                },
                 "gemini-flash-latest": {
                     "id": "gemini-flash-latest",
                     "name": "Gemini Flash Latest",
@@ -133,7 +142,7 @@ def test_recommended_models_filter_for_memory_enhancement() -> None:
     assert [model.model_id for model in recommendations] == ["gpt-4o-mini", "expensive"]
     assert recommendations[0].estimated_memory_job_cost is not None
     assert default_memory_enhancement_model("anthropic", catalog=_catalog()) == "claude-haiku-4-5"
-    assert default_memory_enhancement_model("google", catalog=_catalog()) == "gemini-flash-latest"
+    assert default_memory_enhancement_model("google", catalog=_catalog()) == "gemini-2.5-flash"
     assert default_memory_enhancement_model("openrouter", catalog=_catalog()) == "openai/gpt-4o-mini"
 
 
@@ -184,6 +193,6 @@ def test_provider_plan_supports_gemini_and_openrouter_aliases(tmp_path: Path, mo
     )
 
     assert gemini_plan.selected.provider_id == "google"
-    assert gemini_plan.selected.model == "gemini-flash-latest"
+    assert gemini_plan.selected.model == "gemini-2.5-flash"
     assert openrouter_plan.selected.provider_id == "openrouter"
     assert openrouter_plan.selected.model == "openai/gpt-4o-mini"
