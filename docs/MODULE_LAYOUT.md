@@ -294,6 +294,22 @@ Rules:
 - The facade owns indexing written files, building pyramid summaries, and audit completion events.
 - Keep the parser tolerant. Google Takeout product folders vary heavily by export source.
 
+### `memory_import_atom_blogger.py`
+
+Owns Atom / Blogger XML ingestion scaffolding:
+
+- Atom entry parsing
+- title/content/author/category/link extraction
+- governed markdown planning
+- safe file writing under `memory/imports/atom-blogger/`
+
+Rules:
+
+- Imported Atom/Blogger documents are imported provenance but pending review and evidence-only by default.
+- Import helpers must not import `memory.py`.
+- The facade owns indexing written files, building pyramid summaries, and audit completion events.
+- Keep parsing stdlib-only. XML import should not add a dependency.
+
 ### `memory_profile_export.py`
 
 Owns deterministic portable context exports from reviewed memory:
@@ -478,6 +494,11 @@ memory_import_google_activity.py
   imports memory_observability.py
   imports sanitizer.py
 
+memory_import_atom_blogger.py
+  imports memory_auto_capture.py
+  imports memory_observability.py
+  imports sanitizer.py
+
 memory_profile_export.py
   imports memory_frontmatter.py
   imports memory_observability.py
@@ -521,6 +542,7 @@ Avoid:
 - X/Twitter import: `tests/test_memory_import_twitter.py`
 - Instagram import: `tests/test_memory_import_instagram.py`
 - Google Activity import: `tests/test_memory_import_google_activity.py`
+- Atom/Blogger import: `tests/test_memory_import_atom_blogger.py`
 - Portable profile export: `tests/test_memory_profile_export.py`
 - Sidecar contract: `tests/test_memory_enhancement.py`
 - Provider policy: `tests/test_memory_enhancement_provider.py`

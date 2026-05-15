@@ -248,6 +248,7 @@ Each PA apply writes a backup, a receipt, and updates the install-state ledger .
 | `memory_import_twitter_archive` | Plan or write governed tweet/status memories from X/Twitter archive exports. |
 | `memory_import_instagram_export` | Plan or write restricted, evidence-only memories from Instagram export files. |
 | `memory_import_google_activity_export` | Plan or write restricted, evidence-only memories from Google Activity / Takeout exports. |
+| `memory_import_atom_blogger_export` | Plan or write governed memories from Atom / Blogger XML exports. |
 | `memory_profile_export` | Plan or write portable USER.md / SOUL.md / HEARTBEAT.md / JSON context artifacts from reviewed memory. |
 | `memory_reindex` | Force re-scan after bulk file changes. |
 | `memory_mark_failure` | Flag a memory that led to wrong advice. Penalizes its zone score. |
