@@ -1,0 +1,183 @@
+from __future__ import annotations
+
+import json
+import os
+from collections.abc import Mapping
+from pathlib import Path
+
+from .memory_enhancement_credentials import MemoryEnhancementCredentialResolutionError, ProtocolValidationError
+from .memory_enhancement_oauth import (
+    MemoryEnhancementOAuthCredential,
+    MemoryEnhancementOAuthStore,
+)
+
+
+ANTHROPIC_OAUTH_NAME = "anthropic-memory"
+GOOGLE_OAUTH_NAME = "google-memory"
+
+
+def import_memory_enhancement_oauth_credential(
+    *,
+    provider_id: str,
+    source: str = "auto",
+    name: str = "",
+    store: MemoryEnhancementOAuthStore | None = None,
+    hermes_home: str | Path | None = None,
+    claude_credentials_path: str | Path | None = None,
+) -> MemoryEnhancementOAuthCredential:
+    provider = provider_id.strip().lower().replace("-", "_")
+    selected_source = source.strip().lower()
+    if provider == "anthropic":
+        credential = _import_anthropic(
+            selected_source,
+            name=name or ANTHROPIC_OAUTH_NAME,
+            hermes_home=hermes_home,
+            claude_credentials_path=claude_credentials_path,
+        )
+    elif provider == "google":
+        credential = _import_google(
+            selected_source,
+            name=name or GOOGLE_OAUTH_NAME,
+            hermes_home=hermes_home,
+        )
+    else:
+        raise ProtocolValidationError("memory enhancement oauth import provider unsupported")
+    target_store = store or MemoryEnhancementOAuthStore()
+    target_store.upsert(credential)
+    return credential
+
+
+def _import_anthropic(
+    source: str,
+    *,
+    name: str,
+    hermes_home: str | Path | None,
+    claude_credentials_path: str | Path | None,
+) -> MemoryEnhancementOAuthCredential:
+    attempts = ("hermes_pkce", "claude_code") if source == "auto" else (source,)
+    for attempt in attempts:
+        if attempt == "hermes_pkce":
+            raw = _read_json(_hermes_home(hermes_home) / ".anthropic_oauth.json")
+            credential = _anthropic_from_payload(name, raw, source="hermes_pkce")
+            if credential is not None:
+                return credential
+        elif attempt == "claude_code":
+            raw = _read_json(_claude_credentials_path(claude_credentials_path))
+            credential = _anthropic_from_payload(name, raw, source="claude_code")
+            if credential is not None:
+                return credential
+        else:
+            raise ProtocolValidationError("memory enhancement anthropic oauth import source unsupported")
+    raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth credential unavailable")
+
+
+def _import_google(
+    source: str,
+    *,
+    name: str,
+    hermes_home: str | Path | None,
+) -> MemoryEnhancementOAuthCredential:
+    if source not in {"auto", "hermes_google", "google_pkce"}:
+        raise ProtocolValidationError("memory enhancement google oauth import source unsupported")
+    raw = _read_json(_hermes_home(hermes_home) / "auth" / "google_oauth.json")
+    credential = _google_from_payload(name, raw)
+    if credential is None:
+        raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth credential unavailable")
+    return credential
+
+
+def _anthropic_from_payload(
+    name: str,
+    payload: Mapping[str, object] | None,
+    *,
+    source: str,
+) -> MemoryEnhancementOAuthCredential | None:
+    if not payload:
+        return None
+    access_token = _first_text(payload, ("accessToken", "access_token"))
+    if not access_token:
+        return None
+    return MemoryEnhancementOAuthCredential(
+        name=name,
+        provider_id="anthropic",
+        source=source,
+        access_token=access_token,
+        refresh_token=_first_text(payload, ("refreshToken", "refresh_token")),
+        expires_at_ms=_optional_int(payload.get("expiresAt") or payload.get("expires_at_ms")),
+        transport="anthropic_oauth",
+    )
+
+
+def _google_from_payload(name: str, payload: Mapping[str, object] | None) -> MemoryEnhancementOAuthCredential | None:
+    if not payload:
+        return None
+    access_token = str(payload.get("access") or "").strip()
+    refresh_packed = str(payload.get("refresh") or "").strip()
+    if not access_token or not refresh_packed:
+        return None
+    refresh_token, project_id, managed_project_id = _parse_google_refresh(refresh_packed)
+    return MemoryEnhancementOAuthCredential(
+        name=name,
+        provider_id="google",
+        source="hermes_google",
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_at_ms=_optional_int(payload.get("expires")),
+        transport="google_cloudcode",
+        project_id=project_id or managed_project_id,
+        account_label=str(payload.get("email") or "").strip(),
+        extra={"managed_project_id": managed_project_id} if managed_project_id else {},
+    )
+
+
+def _parse_google_refresh(value: str) -> tuple[str, str, str]:
+    parts = value.split("|", 2)
+    return (
+        parts[0] if len(parts) > 0 else "",
+        parts[1] if len(parts) > 1 else "",
+        parts[2] if len(parts) > 2 else "",
+    )
+
+
+def _read_json(path: Path) -> Mapping[str, object] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return payload if isinstance(payload, Mapping) else None
+
+
+def _hermes_home(path: str | Path | None) -> Path:
+    if path:
+        return Path(path).expanduser().resolve()
+    configured = (
+        os.environ.get("CHIMERA_MEMORY_HERMES_HOME")
+        or os.environ.get("PERSONIFYAGENTS_PWA_HERMES_HOME")
+        or os.environ.get("HERMES_HOME")
+    )
+    if configured:
+        return Path(configured).expanduser().resolve()
+    return Path.home() / ".hermes"
+
+
+def _claude_credentials_path(path: str | Path | None) -> Path:
+    if path:
+        return Path(path).expanduser().resolve()
+    return Path.home() / ".claude" / ".credentials.json"
+
+
+def _first_text(payload: Mapping[str, object], keys: tuple[str, ...]) -> str:
+    for key in keys:
+        value = str(payload.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _optional_int(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None

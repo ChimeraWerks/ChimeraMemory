@@ -385,6 +385,7 @@ def _run_enhance(args):
         import os
 
         from .memory_enhancement_model_client import ProviderModelMemoryEnhancementClient
+        from .memory_enhancement_provider_sidecar import ResolvingMemoryEnhancementProviderClient
         from .memory_enhancement_sidecar import run_provider_sidecar
 
         bearer_token = ""
@@ -400,10 +401,15 @@ def _run_enhance(args):
                 print("Provider token env var is not set", file=sys.stderr)
                 sys.exit(2)
         print(f"Provider memory enhancement sidecar listening on http://{args.host}:{args.port}/enhance")
+        client = ResolvingMemoryEnhancementProviderClient(
+            api_key_client_factory=lambda token: ProviderModelMemoryEnhancementClient(
+                bearer_token=token or provider_token
+            )
+        )
         run_provider_sidecar(
             args.host,
             args.port,
-            client=ProviderModelMemoryEnhancementClient(bearer_token=provider_token),
+            client=client,
             bearer_token=bearer_token,
         )
         return
