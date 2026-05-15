@@ -32,14 +32,14 @@ The OB1-inspired lift is implemented through Phase 5e dashboard and auto-capture
 - Phase 5a-c: sidecar contract, enhancement job queue, deterministic dry-run worker.
 - Phase 5d groundwork: provider priority, credential-reference boundary, budget caps, safe invocation envelope, bounded failure categories, and injected-client runner boundary.
 - Phase 5e usability: PWA memory dashboard and session-close auto-capture protocol.
-- Phase 6 partial: local entity graph schema, frontmatter/enhancement-derived entity indexing, shared-file connection queries, typed entity-edge query/upsert helpers, and typed memory-file reasoning edges.
+- Phase 6 partial: local entity graph schema, frontmatter/enhancement-derived entity indexing, shared-file connection queries, typed entity-edge query/upsert helpers, typed memory-file reasoning edges, and temporal sweep helpers.
 - Refactor: `memory.py` split into focused schema, governance, observability, review, enhancement queue, and frontmatter modules.
 
 Pending larger work:
 
 - Phase 5d remaining: real OAuth/model adapter for memory enhancement.
 - Phase 5e remaining: live retrieval loop.
-- Phase 6 remaining: temporal-validity workflows, pyramid summaries, import pipelines, portable profile export.
+- Phase 6 remaining: classifier integration for edge creation, pyramid summaries, import pipelines, portable profile export.
 
 See `docs/OB1_COMPARISON.md`, `docs/MEMORY_ENHANCEMENT_SIDECAR.md`, and `docs/MODULE_LAYOUT.md`.
 

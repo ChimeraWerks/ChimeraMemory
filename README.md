@@ -237,6 +237,7 @@ Each PA apply writes a backup, a receipt, and updates the install-state ledger .
 | `memory_entity_query` | Query entities, shared-file connections, or explicit typed entity edges. |
 | `memory_edge_upsert` | Create or reinforce a typed reasoning edge between two memory files. |
 | `memory_edge_query` | Query memory-to-memory reasoning edges such as supports or supersedes. |
+| `memory_edge_temporal_sweep` | Expire current memory edges whose validity inputs are stale. |
 | `memory_reindex` | Force re-scan after bulk file changes. |
 | `memory_mark_failure` | Flag a memory that led to wrong advice. Penalizes its zone score. |
 | `memory_consolidation_report` | Dry-run analysis: what would be decayed, staled, or archived. |

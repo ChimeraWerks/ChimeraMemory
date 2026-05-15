@@ -6,6 +6,7 @@ from chimera_memory.memory import (
     init_memory_tables,
     memory_audit_query,
     memory_file_edge_query,
+    memory_file_edge_temporal_sweep,
     memory_file_edge_upsert,
 )
 
@@ -106,6 +107,85 @@ def test_memory_file_edge_query_filters_current_and_historical_edges(tmp_path: P
     support_edges = memory_file_edge_query(conn, relation_type="supports", persona="asa")
     assert len(support_edges) == 1
     assert support_edges[0]["source"]["relative_path"] == "memory/evidence.md"
+
+
+def test_memory_file_edge_current_query_respects_validity_window(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+    _index_pair(conn, tmp_path)
+
+    result = memory_file_edge_upsert(
+        conn,
+        source_file_path="memory/evidence.md",
+        target_file_path="memory/decision.md",
+        relation_type="supports",
+        valid_from="2026-01-01T00:00:00Z",
+        valid_until="2026-12-31T00:00:00Z",
+    )
+
+    assert result["ok"] is True
+    assert memory_file_edge_query(
+        conn,
+        relation_type="supports",
+        current_at="2025-12-31T00:00:00Z",
+    ) == []
+    assert len(memory_file_edge_query(
+        conn,
+        relation_type="supports",
+        current_at="2026-06-01T00:00:00Z",
+    )) == 1
+    assert memory_file_edge_query(
+        conn,
+        relation_type="supports",
+        current_at="2027-01-01T00:00:00Z",
+    ) == []
+
+
+def test_memory_file_edge_temporal_sweep_expires_edges_for_stale_files(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+    _index_pair(conn, tmp_path)
+    memory_file_edge_upsert(
+        conn,
+        source_file_path="memory/evidence.md",
+        target_file_path="memory/decision.md",
+        relation_type="supports",
+    )
+    conn.execute(
+        """
+        UPDATE memory_files
+           SET fm_lifecycle_status = 'superseded'
+         WHERE relative_path = ?
+        """,
+        ("memory/decision.md",),
+    )
+
+    dry_run = memory_file_edge_temporal_sweep(
+        conn,
+        persona="asa",
+        now="2026-05-15T00:00:00Z",
+        dry_run=True,
+    )
+    applied = memory_file_edge_temporal_sweep(
+        conn,
+        persona="asa",
+        now="2026-05-15T00:00:00Z",
+        dry_run=False,
+    )
+
+    assert dry_run["candidate_count"] == 1
+    assert dry_run["expired_count"] == 0
+    assert applied["candidate_count"] == 1
+    assert applied["expired_count"] == 1
+    assert memory_file_edge_query(
+        conn,
+        file_path="memory/decision.md",
+        current_at="2026-05-16T00:00:00Z",
+    ) == []
+
+    events = memory_audit_query(conn, event_type="memory_file_edges_temporal_sweep", persona="asa")
+    assert len(events) == 2
+    assert max(event["payload"]["expired_count"] for event in events) == 1
 
 
 def test_memory_file_edge_upsert_reports_missing_or_same_file(tmp_path: Path) -> None:

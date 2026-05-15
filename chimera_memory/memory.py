@@ -39,6 +39,7 @@ from .memory_frontmatter import parse_frontmatter
 from .memory_file_edges import (
     MEMORY_FILE_EDGE_RELATION_TYPES,
     memory_file_edge_query,
+    memory_file_edge_temporal_sweep,
     memory_file_edge_upsert,
 )
 from .memory_governance import (

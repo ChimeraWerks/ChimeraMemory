@@ -123,6 +123,7 @@ Owns typed reasoning relations between memory files lifted from OB1's `thought_e
 - relation types such as `supports`, `contradicts`, `evolved_into`, `supersedes`, and `depends_on`
 - confidence and support-count accumulation
 - current-only query filtering via `valid_until`
+- temporal sweep helpers for expiring stale current edges
 - typed edge upsert and query helpers
 
 Rules:

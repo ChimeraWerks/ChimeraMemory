@@ -6,6 +6,7 @@ import json
 import re
 import sqlite3
 import uuid
+from datetime import datetime, timezone
 
 from .memory_observability import record_memory_audit_event
 
@@ -19,6 +20,12 @@ MEMORY_FILE_EDGE_RELATION_TYPES = {
 }
 
 _WHITESPACE_RE = re.compile(r"\s+")
+_STALE_FILE_STATUSES = {"stale", "archived"}
+_STALE_LIFECYCLE_STATUSES = {"stale", "superseded", "disputed", "rejected", "archived"}
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 def _json_text(value: object) -> str:
@@ -243,6 +250,7 @@ def memory_file_edge_query(
     relation_type: str | None = None,
     persona: str | None = None,
     current_only: bool = True,
+    current_at: str | None = None,
     limit: int = 50,
 ) -> list[dict]:
     """Query typed reasoning relations between memory files."""
@@ -276,7 +284,11 @@ def memory_file_edge_query(
         conditions.append("(source.persona = ? OR target.persona = ?)")
         params.extend([persona, persona])
     if current_only:
-        conditions.append("(edge.valid_until IS NULL OR edge.valid_until = '')")
+        as_of = current_at or _utc_now()
+        conditions.append("(edge.valid_from IS NULL OR edge.valid_from = '' OR edge.valid_from <= ?)")
+        params.append(as_of)
+        conditions.append("(edge.valid_until IS NULL OR edge.valid_until = '' OR edge.valid_until > ?)")
+        params.append(as_of)
     where = "WHERE " + " AND ".join(conditions) if conditions else ""
     rows = conn.execute(
         f"""
@@ -298,3 +310,101 @@ def memory_file_edge_query(
         params + [max(0, min(int(limit), 500))],
     ).fetchall()
     return [_edge_to_dict(row) for row in rows]
+
+
+def memory_file_edge_temporal_sweep(
+    conn: sqlite3.Connection,
+    *,
+    persona: str | None = None,
+    now: str | None = None,
+    dry_run: bool = True,
+    expire_stale_files: bool = True,
+    expire_zero_decay: bool = True,
+    actor: str = "system",
+) -> dict:
+    """Expire current memory-file edges whose temporal or lifecycle inputs are stale."""
+    now = now or _utc_now()
+    conditions = [
+        "(edge.valid_from IS NULL OR edge.valid_from = '' OR edge.valid_from <= ?)",
+        "(edge.valid_until IS NULL OR edge.valid_until = '' OR edge.valid_until > ?)",
+    ]
+    params: list[object] = [now, now]
+    stale_reasons: list[str] = []
+    if expire_stale_files:
+        status_placeholders = ",".join("?" * len(_STALE_FILE_STATUSES))
+        lifecycle_placeholders = ",".join("?" * len(_STALE_LIFECYCLE_STATUSES))
+        stale_reasons.append(
+            f"source.fm_status IN ({status_placeholders}) "
+            f"OR target.fm_status IN ({status_placeholders}) "
+            f"OR source.fm_lifecycle_status IN ({lifecycle_placeholders}) "
+            f"OR target.fm_lifecycle_status IN ({lifecycle_placeholders})"
+        )
+        params.extend(sorted(_STALE_FILE_STATUSES))
+        params.extend(sorted(_STALE_FILE_STATUSES))
+        params.extend(sorted(_STALE_LIFECYCLE_STATUSES))
+        params.extend(sorted(_STALE_LIFECYCLE_STATUSES))
+    if expire_zero_decay:
+        stale_reasons.append("edge.decay_weight <= 0")
+    if not stale_reasons:
+        return {"ok": False, "error": "no sweep criteria enabled"}
+    conditions.append("(" + " OR ".join(stale_reasons) + ")")
+    if persona:
+        conditions.append("(source.persona = ? OR target.persona = ?)")
+        params.extend([persona, persona])
+
+    rows = conn.execute(
+        f"""
+        SELECT edge.id, edge.edge_id, edge.relation_type, edge.confidence,
+               edge.support_count, edge.valid_from, edge.valid_until,
+               edge.decay_weight, edge.classifier_version, edge.evidence,
+               edge.metadata, edge.created_at, edge.updated_at,
+               source.id, source.path, source.persona, source.relative_path,
+               source.fm_type, source.fm_about,
+               target.id, target.path, target.persona, target.relative_path,
+               target.fm_type, target.fm_about
+        FROM memory_file_edges edge
+        JOIN memory_files source ON source.id = edge.source_file_id
+        JOIN memory_files target ON target.id = edge.target_file_id
+        WHERE {' AND '.join(conditions)}
+        ORDER BY edge.created_at ASC
+        """,
+        params,
+    ).fetchall()
+    candidates = [_edge_to_dict(row) for row in rows]
+    if not dry_run and candidates:
+        edge_ids = [edge["id"] for edge in candidates]
+        placeholders = ",".join("?" * len(edge_ids))
+        conn.execute(
+            f"""
+            UPDATE memory_file_edges
+               SET valid_until = ?
+             WHERE id IN ({placeholders})
+            """,
+            [now, *edge_ids],
+        )
+    record_memory_audit_event(
+        conn,
+        "memory_file_edges_temporal_sweep",
+        persona=persona,
+        target_kind="memory_file_edges",
+        target_id=persona or "all",
+        payload={
+            "dry_run": dry_run,
+            "expired_count": 0 if dry_run else len(candidates),
+            "candidate_count": len(candidates),
+            "now": now,
+            "expire_stale_files": expire_stale_files,
+            "expire_zero_decay": expire_zero_decay,
+        },
+        actor=actor,
+        commit=False,
+    )
+    conn.commit()
+    return {
+        "ok": True,
+        "dry_run": dry_run,
+        "candidate_count": len(candidates),
+        "expired_count": 0 if dry_run else len(candidates),
+        "now": now,
+        "candidates": candidates,
+    }

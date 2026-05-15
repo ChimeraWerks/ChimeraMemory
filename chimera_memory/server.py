@@ -1041,6 +1041,41 @@ def create_server():
         return "\n".join(lines)
 
     @server.tool()
+    def memory_edge_temporal_sweep(
+        persona: str = "",
+        dry_run: bool = True,
+        now: str = "",
+        expire_stale_files: bool = True,
+        expire_zero_decay: bool = True,
+        limit: int = 20,
+    ) -> str:
+        """Expire current memory edges whose validity inputs are stale."""
+        _ensure_memory_indexed()
+        from .memory import memory_file_edge_temporal_sweep as _sweep
+
+        result = _sweep(
+            _get_memory_conn(),
+            persona=persona or None,
+            now=now or None,
+            dry_run=dry_run,
+            expire_stale_files=expire_stale_files,
+            expire_zero_decay=expire_zero_decay,
+            actor="mcp",
+        )
+        if not result.get("ok"):
+            return f"Memory edge temporal sweep failed: {result.get('error', 'unknown error')}"
+        verb = "Would expire" if result.get("dry_run") else "Expired"
+        lines = [
+            f"{verb} {result['candidate_count']} memory edge(s) as of {result['now']}.",
+        ]
+        for edge in result.get("candidates", [])[: max(0, min(limit, 100))]:
+            lines.append(
+                f"- {edge['source']['relative_path']} "
+                f"-[{edge['relation_type']}]-> {edge['target']['relative_path']}"
+            )
+        return "\n".join(lines)
+
+    @server.tool()
     def memory_enhancement_provider_plan() -> str:
         """Show the safe provider-resolution plan for memory enhancement."""
         from .memory_enhancement_provider import resolve_enhancement_provider_plan, safe_provider_receipt
