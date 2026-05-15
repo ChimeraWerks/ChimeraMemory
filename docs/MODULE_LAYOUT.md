@@ -262,6 +262,22 @@ Rules:
 - The facade owns indexing written files, building pyramid summaries, and audit completion events.
 - Direct messages are intentionally out of scope for this module. DM imports need a separate restricted importer.
 
+### `memory_import_instagram.py`
+
+Owns Instagram export ingestion scaffolding:
+
+- message thread JSON flattening
+- content/post JSON flattening
+- governed markdown planning
+- safe file writing under `memory/imports/instagram/`
+
+Rules:
+
+- Imported Instagram documents are imported provenance, pending review, restricted, and evidence-only by default.
+- Import helpers must not import `memory.py`.
+- The facade owns indexing written files, building pyramid summaries, and audit completion events.
+- Keep the parser tolerant. Instagram Takeout structure changes between export versions.
+
 ### `memory_profile_export.py`
 
 Owns deterministic portable context exports from reviewed memory:
@@ -436,6 +452,11 @@ memory_import_twitter.py
   imports memory_observability.py
   imports sanitizer.py
 
+memory_import_instagram.py
+  imports memory_auto_capture.py
+  imports memory_observability.py
+  imports sanitizer.py
+
 memory_profile_export.py
   imports memory_frontmatter.py
   imports memory_observability.py
@@ -477,6 +498,7 @@ Avoid:
 - Perplexity import: `tests/test_memory_import_perplexity.py`
 - Grok import: `tests/test_memory_import_grok.py`
 - X/Twitter import: `tests/test_memory_import_twitter.py`
+- Instagram import: `tests/test_memory_import_instagram.py`
 - Portable profile export: `tests/test_memory_profile_export.py`
 - Sidecar contract: `tests/test_memory_enhancement.py`
 - Provider policy: `tests/test_memory_enhancement_provider.py`
