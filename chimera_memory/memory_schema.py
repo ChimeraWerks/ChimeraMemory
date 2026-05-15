@@ -306,6 +306,51 @@ BEGIN
      WHERE id = NEW.id;
 END;
 
+CREATE TABLE IF NOT EXISTS memory_file_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    edge_id TEXT UNIQUE NOT NULL,
+    source_file_id INTEGER NOT NULL REFERENCES memory_files(id) ON DELETE CASCADE,
+    target_file_id INTEGER NOT NULL REFERENCES memory_files(id) ON DELETE CASCADE,
+    relation_type TEXT NOT NULL DEFAULT 'related_to',
+    confidence REAL DEFAULT 1.0,
+    support_count INTEGER NOT NULL DEFAULT 1,
+    valid_from TEXT,
+    valid_until TEXT,
+    decay_weight REAL DEFAULT 1.0,
+    classifier_version TEXT DEFAULT '',
+    evidence TEXT DEFAULT '',
+    metadata TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    updated_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    CHECK(source_file_id <> target_file_id),
+    UNIQUE(source_file_id, target_file_id, relation_type)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_file_edges_source
+ON memory_file_edges(source_file_id, relation_type);
+
+CREATE INDEX IF NOT EXISTS idx_memory_file_edges_target
+ON memory_file_edges(target_file_id, relation_type);
+
+CREATE INDEX IF NOT EXISTS idx_memory_file_edges_relation
+ON memory_file_edges(relation_type, confidence DESC);
+
+CREATE INDEX IF NOT EXISTS idx_memory_file_edges_current
+ON memory_file_edges(relation_type, source_file_id)
+WHERE valid_until IS NULL OR valid_until = '';
+
+CREATE TRIGGER IF NOT EXISTS memory_file_edges_au_updated_at
+AFTER UPDATE OF
+    source_file_id, target_file_id, relation_type, confidence,
+    support_count, valid_from, valid_until, decay_weight,
+    classifier_version, evidence, metadata
+ON memory_file_edges
+BEGIN
+    UPDATE memory_file_edges
+       SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+     WHERE id = NEW.id;
+END;
+
 CREATE TABLE IF NOT EXISTS memory_enhancement_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id TEXT UNIQUE NOT NULL,

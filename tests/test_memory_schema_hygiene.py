@@ -42,6 +42,10 @@ def _indexes(conn: sqlite3.Connection) -> set[str]:
     return {row[1] for row in conn.execute("PRAGMA index_list(memory_files)").fetchall()}
 
 
+def _table_names(conn: sqlite3.Connection) -> set[str]:
+    return {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()}
+
+
 def test_normalized_content_fingerprint_collapses_cosmetic_differences() -> None:
     assert normalized_content_fingerprint(" Hello\n\nWORLD ") == normalized_content_fingerprint("hello world")
     assert normalized_content_fingerprint("hello world") != normalized_content_fingerprint("hello there")
@@ -89,6 +93,7 @@ def test_init_memory_tables_migrates_legacy_memory_files_schema() -> None:
     assert "idx_mf_review_status" in indexes
     assert "idx_mf_sensitivity_tier" in indexes
     assert "idx_mf_instruction_use" in indexes
+    assert "memory_file_edges" in _table_names(conn)
 
 
 def test_index_file_writes_content_fingerprint_and_updates_timestamp(tmp_path: Path) -> None:

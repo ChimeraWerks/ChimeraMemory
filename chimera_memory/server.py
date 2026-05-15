@@ -957,6 +957,90 @@ def create_server():
         return "\n".join(lines)
 
     @server.tool()
+    def memory_edge_upsert(
+        source_file_path: str,
+        target_file_path: str,
+        relation_type: str = "related_to",
+        confidence: float = 1.0,
+        evidence: str = "",
+        valid_from: str = "",
+        valid_until: str = "",
+        decay_weight: float = 1.0,
+        classifier_version: str = "manual.v1",
+    ) -> str:
+        """Create or reinforce a typed reasoning relation between two memory files."""
+        _ensure_memory_indexed()
+        from .memory import MEMORY_FILE_EDGE_RELATION_TYPES, memory_file_edge_upsert as _upsert
+
+        if relation_type not in MEMORY_FILE_EDGE_RELATION_TYPES:
+            allowed = ", ".join(sorted(MEMORY_FILE_EDGE_RELATION_TYPES))
+            return f"Unsupported memory edge relation. Allowed: {allowed}"
+        result = _upsert(
+            _get_memory_conn(),
+            source_file_path=source_file_path,
+            target_file_path=target_file_path,
+            relation_type=relation_type,
+            confidence=confidence,
+            valid_from=valid_from or None,
+            valid_until=valid_until or None,
+            decay_weight=decay_weight,
+            classifier_version=classifier_version,
+            evidence=evidence,
+            metadata={"source": "mcp"},
+            actor="mcp",
+        )
+        if not result.get("ok"):
+            return f"Memory edge upsert failed: {result.get('error', 'unknown error')}"
+        edge = result["edge"]
+        return (
+            f"Upserted memory edge {edge['edge_id']} "
+            f"{edge['source']['relative_path']} -[{edge['relation_type']} "
+            f"x{edge['support_count']} conf={edge['confidence']:.2f}]-> "
+            f"{edge['target']['relative_path']}"
+        )
+
+    @server.tool()
+    def memory_edge_query(
+        file_path: str = "",
+        source_file_path: str = "",
+        target_file_path: str = "",
+        relation_type: str = "",
+        persona: str = "",
+        current_only: bool = True,
+        limit: int = 50,
+    ) -> str:
+        """Query typed reasoning relations between memory files."""
+        _ensure_memory_indexed()
+        from .memory import memory_file_edge_query as _query
+
+        results = _query(
+            _get_memory_conn(),
+            file_path=file_path or None,
+            source_file_path=source_file_path or None,
+            target_file_path=target_file_path or None,
+            relation_type=relation_type or None,
+            persona=persona or None,
+            current_only=current_only,
+            limit=limit,
+        )
+        if not results:
+            return "No memory edges found."
+        lines = ["Memory edges:"]
+        for edge in results:
+            validity = ""
+            if edge.get("valid_until"):
+                validity = f" until={edge['valid_until']}"
+            lines.append(
+                f"- {edge['source']['relative_path']} "
+                f"-[{edge['relation_type']} x{edge['support_count']} "
+                f"conf={edge['confidence']:.2f}{validity}]-> "
+                f"{edge['target']['relative_path']}"
+            )
+            if edge.get("evidence"):
+                lines.append(f"  evidence: {edge['evidence']}")
+        return "\n".join(lines)
+
+    @server.tool()
     def memory_enhancement_provider_plan() -> str:
         """Show the safe provider-resolution plan for memory enhancement."""
         from .memory_enhancement_provider import resolve_enhancement_provider_plan, safe_provider_receipt

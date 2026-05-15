@@ -116,7 +116,7 @@ The lift items above are sequenced into six phases. Each phase ships independent
 - **Phase 3:** Safety spine. Governance fields (provenance, confidence, lifecycle_status, review_status, sensitivity_tier, use-policy) on `memory_files` + YAML frontmatter extensions. Shipped.
 - **Phase 4:** Writeback hygiene. content_fingerprint UNIQUE index, idempotency_key UNIQUE index, review-queue MCP tools. Shipped.
 - **Phase 5:** Sidecar implementation + usability layer. Contract, queue, deterministic dry-run worker, provider plumbing, PA supervisor rails, smoke harness, PA dashboard, and auto-capture session-close protocol shipped. Live tokened provider verification and live retrieval loop remain.
-- **Phase 6:** Expansion. Local entity graph tables, frontmatter-derived indexing, enhancement-result entity linking, shared-file connection query, and typed entity-edge query/upsert helpers shipped. Richer typed-relation workflows, temporal validity UX, pyramid summaries, import pipelines, and portable profile export remain.
+- **Phase 6:** Expansion. Local entity graph tables, frontmatter-derived indexing, enhancement-result entity linking, shared-file connection query, typed entity-edge query/upsert helpers, and typed memory-file reasoning edges shipped. Temporal validity UX, pyramid summaries, import pipelines, and portable profile export remain.
 
 ## Memory-Enhancement Sidecar Design
 

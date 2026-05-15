@@ -115,6 +115,23 @@ Rules:
 - Entity helpers must not import `memory.py`.
 - LLM extraction can populate these tables later, but this module must keep a local frontmatter-only path.
 
+### `memory_file_edges.py`
+
+Owns typed reasoning relations between memory files lifted from OB1's `thought_edges` pattern:
+
+- `memory_file_edges`
+- relation types such as `supports`, `contradicts`, `evolved_into`, `supersedes`, and `depends_on`
+- confidence and support-count accumulation
+- current-only query filtering via `valid_until`
+- typed edge upsert and query helpers
+
+Rules:
+
+- Memory-file edges are additive. Do not replace `memory_gaps` or the entity graph.
+- Edge helpers may call observability audit helpers.
+- Edge helpers must not import `memory.py`.
+- Keep relation types explicit. Do not accept arbitrary free-form relation labels through public tools.
+
 ### `memory_enhancement.py`
 
 Owns the model-free sidecar contract:
@@ -227,6 +244,9 @@ memory_auto_capture.py
 memory_entities.py
   imports memory_observability.py
 
+memory_file_edges.py
+  imports memory_observability.py
+
 memory_observability.py
   imports only stdlib
 
@@ -254,6 +274,7 @@ Avoid:
 - Review: `tests/test_memory_review.py`
 - Auto-capture: `tests/test_memory_auto_capture.py`
 - Entities: `tests/test_memory_entities.py`
+- Memory-file edges: `tests/test_memory_file_edges.py`
 - Sidecar contract: `tests/test_memory_enhancement.py`
 - Provider policy: `tests/test_memory_enhancement_provider.py`
 - Provider runner: `tests/test_memory_enhancement_runner.py`
