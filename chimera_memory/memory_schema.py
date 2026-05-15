@@ -351,6 +351,35 @@ BEGIN
      WHERE id = NEW.id;
 END;
 
+CREATE TABLE IF NOT EXISTS memory_pyramid_summaries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    summary_id TEXT UNIQUE NOT NULL,
+    file_id INTEGER NOT NULL REFERENCES memory_files(id) ON DELETE CASCADE,
+    persona TEXT,
+    level INTEGER NOT NULL CHECK(level IN (0, 1, 2)),
+    level_name TEXT NOT NULL CHECK(level_name IN ('chunk', 'section', 'document')),
+    ordinal INTEGER NOT NULL,
+    parent_summary_id TEXT,
+    source_content_hash TEXT NOT NULL,
+    source_start INTEGER NOT NULL DEFAULT 0,
+    source_end INTEGER NOT NULL DEFAULT 0,
+    summary_text TEXT NOT NULL,
+    summary_hash TEXT NOT NULL,
+    summarizer_version TEXT NOT NULL DEFAULT 'chimera-memory.pyramid-summary.v1',
+    metadata TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    UNIQUE(file_id, level, ordinal, source_content_hash, summarizer_version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_pyramid_summaries_file
+ON memory_pyramid_summaries(file_id, level, ordinal);
+
+CREATE INDEX IF NOT EXISTS idx_memory_pyramid_summaries_persona
+ON memory_pyramid_summaries(persona, level_name);
+
+CREATE INDEX IF NOT EXISTS idx_memory_pyramid_summaries_current
+ON memory_pyramid_summaries(file_id, source_content_hash, summarizer_version);
+
 CREATE TABLE IF NOT EXISTS memory_enhancement_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     job_id TEXT UNIQUE NOT NULL,

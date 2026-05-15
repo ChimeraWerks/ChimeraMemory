@@ -1127,6 +1127,77 @@ def create_server():
         return "\n".join(lines)
 
     @server.tool()
+    def memory_pyramid_summary_build(
+        file_path: str,
+        persona: str = "",
+        chunk_chars: int = 1600,
+        section_size: int = 4,
+        max_summary_chars: int = 500,
+        force: bool = False,
+    ) -> str:
+        """Build deterministic chunk, section, and document summaries for one memory file."""
+        _ensure_memory_indexed()
+        from .memory import memory_pyramid_summary_build as _build
+
+        result = _build(
+            _get_memory_conn(),
+            file_path=file_path,
+            persona=persona or None,
+            chunk_chars=chunk_chars,
+            section_size=section_size,
+            max_summary_chars=max_summary_chars,
+            force=force,
+            actor="mcp",
+        )
+        if not result.get("ok"):
+            return f"Pyramid summary build failed: {result.get('error', 'unknown error')}"
+        counts = result.get("counts", {})
+        file_info = result.get("file", {})
+        state = "built" if result.get("built") else "already current"
+        return (
+            f"Pyramid summaries {state} for {file_info.get('relative_path', file_path)}. "
+            f"chunks={counts.get('chunk', 0)} sections={counts.get('section', 0)} "
+            f"documents={counts.get('document', 0)}"
+        )
+
+    @server.tool()
+    def memory_pyramid_summary_query(
+        file_path: str = "",
+        persona: str = "",
+        level_name: str = "",
+        search: str = "",
+        current_only: bool = True,
+        limit: int = 20,
+    ) -> str:
+        """Query deterministic multi-resolution memory summaries."""
+        _ensure_memory_indexed()
+        from .memory import memory_pyramid_summary_query as _query
+
+        results = _query(
+            _get_memory_conn(),
+            file_path=file_path or None,
+            persona=persona or None,
+            level_name=level_name or None,
+            search=search or None,
+            current_only=current_only,
+            limit=limit,
+        )
+        if not results:
+            return "No pyramid summaries found."
+        lines = ["Level | File | Summary"]
+        lines.append("------|------|--------")
+        for summary in results[: max(0, min(limit, 100))]:
+            file_info = summary.get("file", {})
+            text = str(summary.get("summary_text", ""))
+            if len(text) > 220:
+                text = text[:217].rstrip() + "..."
+            lines.append(
+                f"{summary.get('level_name')}:{summary.get('ordinal')} | "
+                f"{file_info.get('relative_path', '')} | {text}"
+            )
+        return "\n".join(lines)
+
+    @server.tool()
     def memory_enhancement_provider_plan() -> str:
         """Show the safe provider-resolution plan for memory enhancement."""
         from .memory_enhancement_provider import resolve_enhancement_provider_plan, safe_provider_receipt

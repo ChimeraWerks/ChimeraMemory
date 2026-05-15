@@ -149,6 +149,23 @@ Rules:
 - Edge helpers must not import `memory.py`.
 - Keep relation types explicit. Do not accept arbitrary free-form relation labels through public tools.
 
+### `memory_pyramid.py`
+
+Owns deterministic multi-resolution summaries for long curated or imported memory files:
+
+- `memory_pyramid_summaries`
+- chunk, section, and document summary levels
+- idempotent rebuilds keyed by memory-file content hash
+- query helpers for current summaries
+- audit events for summary builds
+
+Rules:
+
+- Pyramid summaries are additive sidecar rows. Do not modify the source markdown file.
+- Summary helpers may call observability audit helpers.
+- Summary helpers must not import `memory.py`.
+- Keep the default path deterministic and local. LLM summaries can be a later provider-backed enhancement, not the baseline.
+
 ### `memory_enhancement.py`
 
 Owns the model-free sidecar contract:
@@ -268,6 +285,11 @@ memory_entities.py
 memory_file_edges.py
   imports memory_observability.py
 
+memory_pyramid.py
+  imports memory_frontmatter.py
+  imports memory_observability.py
+  imports sanitizer.py
+
 memory_observability.py
   imports only stdlib
 
@@ -297,6 +319,7 @@ Avoid:
 - Auto-capture: `tests/test_memory_auto_capture.py`
 - Entities: `tests/test_memory_entities.py`
 - Memory-file edges: `tests/test_memory_file_edges.py`
+- Pyramid summaries: `tests/test_memory_pyramid.py`
 - Sidecar contract: `tests/test_memory_enhancement.py`
 - Provider policy: `tests/test_memory_enhancement_provider.py`
 - Provider runner: `tests/test_memory_enhancement_runner.py`
