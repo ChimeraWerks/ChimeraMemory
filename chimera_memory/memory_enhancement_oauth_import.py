@@ -176,6 +176,9 @@ def _anthropic_from_payload(
 ) -> MemoryEnhancementOAuthCredential | None:
     if not payload:
         return None
+    nested = payload.get("claudeAiOauth")
+    if isinstance(nested, Mapping):
+        payload = nested
     access_token = _first_text(payload, ("accessToken", "access_token"))
     if not access_token:
         return None

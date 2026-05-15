@@ -102,6 +102,36 @@ def test_import_anthropic_claude_code_credentials(tmp_path: Path):
     assert store.get("anthropic-memory", provider_id="anthropic").access_token == "TEST_ONLY_ANTHROPIC_ACCESS"
 
 
+def test_import_anthropic_nested_claude_code_credentials(tmp_path: Path):
+    claude_path = tmp_path / ".claude" / ".credentials.json"
+    claude_path.parent.mkdir()
+    claude_path.write_text(
+        json.dumps(
+            {
+                "claudeAiOauth": {
+                    "accessToken": "TEST_ONLY_ANTHROPIC_ACCESS",
+                    "refreshToken": "TEST_ONLY_ANTHROPIC_REFRESH",
+                    "expiresAt": 1_800_000_000_000,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
+
+    credential = import_memory_enhancement_oauth_credential(
+        provider_id="anthropic",
+        source="claude_code",
+        store=store,
+        claude_credentials_path=claude_path,
+    )
+
+    assert credential.provider_id == "anthropic"
+    assert credential.source == "claude_code"
+    assert credential.transport == "anthropic_oauth"
+    assert store.get("anthropic-memory", provider_id="anthropic").refresh_token == "TEST_ONLY_ANTHROPIC_REFRESH"
+
+
 def test_import_google_hermes_credentials_parses_packed_project(tmp_path: Path):
     hermes_home = tmp_path / ".hermes"
     google_path = hermes_home / "auth" / "google_oauth.json"
