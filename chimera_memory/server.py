@@ -872,6 +872,52 @@ def create_server():
         return "\n".join(lines)
 
     @server.tool()
+    def memory_import_chatgpt_export(
+        export_path: str,
+        persona: str = "",
+        limit: int = 50,
+        write: bool = False,
+        force: bool = False,
+        build_pyramid: bool = True,
+    ) -> str:
+        """Plan or import ChatGPT conversations into governed local memory files."""
+        _ensure_memory_indexed()
+        from .memory import memory_import_chatgpt_export as _import_chatgpt
+
+        selected_persona = (persona or os.environ.get("TRANSCRIPT_PERSONA") or "").strip()
+        if not selected_persona:
+            return "ChatGPT import failed: persona is required"
+        personas_dir = Path(os.environ.get("CHIMERA_PERSONAS_DIR", "C:/Github/ChimeraPersonas/personas"))
+        result = _import_chatgpt(
+            _get_memory_conn(),
+            personas_dir,
+            export_path=export_path,
+            persona=selected_persona,
+            limit=limit,
+            write=write,
+            force=force,
+            build_pyramid=build_pyramid,
+            actor="mcp",
+        )
+        if not result.get("ok"):
+            return f"ChatGPT import failed: {result.get('error', 'unknown error')}"
+        if not write:
+            summary = result.get("summary", {})
+            lines = [f"ChatGPT import plan: {summary.get('plan_count', 0)} conversation(s) from {export_path}"]
+            for plan in result.get("plans", [])[: max(0, min(limit, 20))]:
+                lines.append(
+                    f"- {plan.get('relative_path')} messages={plan.get('message_count')} "
+                    f"title={plan.get('title')}"
+                )
+            return "\n".join(lines)
+        summary = result.get("summary", {})
+        return (
+            f"ChatGPT import complete: written={summary.get('written_count', 0)} "
+            f"skipped={summary.get('skipped_count', 0)} failed={summary.get('failed_count', 0)} "
+            f"pyramid_built={summary.get('pyramid_built_count', 0)}"
+        )
+
+    @server.tool()
     def memory_entity_index(persona: str | None = None, limit: int | None = None) -> str:
         """Build the local entity graph from indexed memory frontmatter."""
         _ensure_memory_indexed()

@@ -240,6 +240,7 @@ Each PA apply writes a backup, a receipt, and updates the install-state ledger .
 | `memory_edge_temporal_sweep` | Expire current memory edges whose validity inputs are stale. |
 | `memory_pyramid_summary_build` | Build deterministic chunk, section, and document summaries for an indexed memory file. |
 | `memory_pyramid_summary_query` | Query multi-resolution summaries for long imported memories. |
+| `memory_import_chatgpt_export` | Plan or write governed memories from a ChatGPT `conversations.json` export, with optional pyramid summaries. |
 | `memory_reindex` | Force re-scan after bulk file changes. |
 | `memory_mark_failure` | Flag a memory that led to wrong advice. Penalizes its zone score. |
 | `memory_consolidation_report` | Dry-run analysis: what would be decayed, staled, or archived. |

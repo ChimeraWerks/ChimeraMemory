@@ -42,6 +42,7 @@ from .memory_file_edges import (
     memory_file_edge_temporal_sweep,
     memory_file_edge_upsert,
 )
+from .memory_import_chatgpt import memory_import_chatgpt_export as _memory_import_chatgpt_export
 from .memory_governance import (
     INSTRUCTION_GRADE_PROVENANCE,
     LIFECYCLE_STATUSES,
@@ -798,6 +799,34 @@ def memory_auto_capture_session_close(
         "action_items": plan.get("action_items", []),
         "guard_findings": plan.get("guard_findings", []),
     }
+
+
+def memory_import_chatgpt_export(
+    conn: sqlite3.Connection,
+    personas_dir: Path,
+    *,
+    export_path: str,
+    persona: str,
+    limit: int = 50,
+    write: bool = False,
+    force: bool = False,
+    build_pyramid: bool = True,
+    actor: str = "agent",
+) -> dict:
+    """Plan or write governed memories from a ChatGPT conversations export."""
+    return _memory_import_chatgpt_export(
+        conn,
+        personas_dir,
+        export_path=export_path,
+        persona=persona,
+        index_file_func=index_file,
+        pyramid_summary_builder=memory_pyramid_summary_build,
+        limit=limit,
+        write=write,
+        force=force,
+        build_pyramid=build_pyramid,
+        actor=actor,
+    )
 
 
 # â”€â”€â”€ Live File Watcher â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

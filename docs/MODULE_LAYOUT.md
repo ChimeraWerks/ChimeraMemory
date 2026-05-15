@@ -166,6 +166,22 @@ Rules:
 - Summary helpers must not import `memory.py`.
 - Keep the default path deterministic and local. LLM summaries can be a later provider-backed enhancement, not the baseline.
 
+### `memory_import_chatgpt.py`
+
+Owns ChatGPT export ingestion scaffolding:
+
+- `conversations.json` loading from a file, directory, or zip export
+- conversation flattening
+- governed markdown planning
+- safe file writing under `memory/imports/chatgpt/`
+
+Rules:
+
+- Imported conversations are imported provenance but pending review and evidence-only by default.
+- Import helpers must not import `memory.py`.
+- The facade owns indexing written files, building pyramid summaries, and audit completion events.
+- Keep parser behavior tolerant. ChatGPT export shape changes over time.
+
 ### `memory_enhancement.py`
 
 Owns the model-free sidecar contract:
@@ -290,6 +306,11 @@ memory_pyramid.py
   imports memory_observability.py
   imports sanitizer.py
 
+memory_import_chatgpt.py
+  imports memory_auto_capture.py
+  imports memory_observability.py
+  imports sanitizer.py
+
 memory_observability.py
   imports only stdlib
 
@@ -320,6 +341,7 @@ Avoid:
 - Entities: `tests/test_memory_entities.py`
 - Memory-file edges: `tests/test_memory_file_edges.py`
 - Pyramid summaries: `tests/test_memory_pyramid.py`
+- ChatGPT import: `tests/test_memory_import_chatgpt.py`
 - Sidecar contract: `tests/test_memory_enhancement.py`
 - Provider policy: `tests/test_memory_enhancement_provider.py`
 - Provider runner: `tests/test_memory_enhancement_runner.py`
