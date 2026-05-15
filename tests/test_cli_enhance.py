@@ -224,7 +224,7 @@ def test_cli_enhance_serve_provider_uses_separate_sidecar_and_provider_tokens(mo
     assert captured["host"] == "127.0.0.1"
     assert captured["port"] == 8998
     assert captured["bearer_token"] == sidecar_token
-    assert captured["client"].bearer_token == provider_token
+    assert captured["client"]._api_key_client_factory("").bearer_token == provider_token
     assert sidecar_token not in output
     assert provider_token not in output
 
