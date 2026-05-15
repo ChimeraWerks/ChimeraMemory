@@ -6,6 +6,7 @@ from chimera_memory.memory import (
     init_memory_tables,
     memory_audit_query,
     memory_entity_connections,
+    memory_entity_edge_query,
     memory_entity_index,
     memory_entity_query,
     memory_file_entity_links,
@@ -129,3 +130,11 @@ def test_typed_entity_edge_upsert_accumulates_support() -> None:
     assert first["edge_id"] == second["edge_id"]
     assert second["support_count"] == 2
     assert second["confidence"] == 0.8
+
+    edges = memory_entity_edge_query(conn, entity_name="PA", relation_type="uses")
+
+    assert len(edges) == 1
+    assert edges[0]["edge_id"] == first["edge_id"]
+    assert edges[0]["source"]["canonical_name"] == "PA"
+    assert edges[0]["target"]["canonical_name"] == "Codex"
+    assert edges[0]["support_count"] == 2

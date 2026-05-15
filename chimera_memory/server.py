@@ -834,12 +834,33 @@ def create_server():
         entity_type: str = "",
         persona: str = "",
         connections_for: str = "",
+        relation_type: str = "",
         limit: int = 50,
     ) -> str:
         """Query entities or show entity connections by shared memory evidence."""
         _ensure_memory_indexed()
         from .memory import memory_entity_connections as _connections
+        from .memory import memory_entity_edge_query as _edge_query
         from .memory import memory_entity_query as _entity_query
+
+        if relation_type.strip():
+            results = _edge_query(
+                _get_memory_conn(),
+                entity_name=connections_for or query or None,
+                relation_type=relation_type,
+                limit=limit,
+            )
+            if not results:
+                return "No entity edges found."
+            lines = ["Entity edges:"]
+            for row in results:
+                lines.append(
+                    f"- {row['source']['canonical_name']} "
+                    f"-[{row['relation_type']} x{row['support_count']} "
+                    f"conf={row['confidence']:.2f}]-> "
+                    f"{row['target']['canonical_name']}"
+                )
+            return "\n".join(lines)
 
         if connections_for.strip():
             results = _connections(

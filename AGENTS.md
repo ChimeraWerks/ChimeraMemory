@@ -31,7 +31,7 @@ The OB1-inspired lift is implemented through Phase 5e dashboard plus a first Pha
 - Phase 4: review queue tools.
 - Phase 5a-c: sidecar contract, enhancement job queue, deterministic dry-run worker.
 - Phase 5d groundwork: provider priority, credential-reference boundary, budget caps, safe invocation envelope, bounded failure categories, and injected-client runner boundary.
-- Phase 6 partial: local entity graph schema, frontmatter/enhancement-derived entity indexing, shared-file connection queries, and typed entity-edge upsert helpers.
+- Phase 6 partial: local entity graph schema, frontmatter/enhancement-derived entity indexing, shared-file connection queries, typed entity-edge query/upsert helpers.
 - Refactor: `memory.py` split into focused schema, governance, observability, review, enhancement queue, and frontmatter modules.
 
 Pending larger work:
@@ -51,7 +51,7 @@ Do not use `memory.py` as a dumping ground. It is now the facade/orchestration l
 - `chimera_memory/memory_governance.py`: provenance/lifecycle/review/sensitivity constants, frontmatter governance parsing, trust posture helpers.
 - `chimera_memory/memory_observability.py`: recall traces, recall items, audit events, query helpers, JSON payload helpers.
 - `chimera_memory/memory_review.py`: human review queue actions and review audit logging.
-- `chimera_memory/memory_entities.py`: local entity graph, entity/file links from frontmatter and enhancement output, shared-file connection queries, typed entity-edge upserts.
+- `chimera_memory/memory_entities.py`: local entity graph, entity/file links from frontmatter and enhancement output, shared-file connection queries, typed entity-edge queries/upserts.
 - `chimera_memory/memory_enhancement.py`: model-free sidecar request/response contract and untrusted-content wrapper.
 - `chimera_memory/memory_enhancement_provider.py`: provider priority, credential references, budget policy, safe invocation envelope, bounded failure categories.
 - `chimera_memory/memory_enhancement_runner.py`: provider-aware batch runner using an injected client protocol. No token storage or provider-specific network code.

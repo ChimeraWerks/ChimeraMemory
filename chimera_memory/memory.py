@@ -27,6 +27,7 @@ from .memory_entities import (
     MENTION_ROLES,
     apply_enhancement_entities,
     memory_entity_connections,
+    memory_entity_edge_query,
     memory_entity_index,
     memory_entity_query,
     memory_file_entity_links,

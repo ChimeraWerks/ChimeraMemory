@@ -586,6 +586,71 @@ def memory_entity_connections(
     return results
 
 
+def memory_entity_edge_query(
+    conn: sqlite3.Connection,
+    *,
+    entity_name: str | None = None,
+    relation_type: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Query explicit typed entity edges."""
+    conditions, params = [], []
+    if entity_name:
+        normalized = normalize_entity_name(entity_name)
+        conditions.append(
+            "(source.normalized_name = ? OR target.normalized_name = ? "
+            "OR source.canonical_name = ? OR target.canonical_name = ?)"
+        )
+        params.extend([normalized, normalized, entity_name, entity_name])
+    if relation_type:
+        conditions.append("edge.relation_type = ?")
+        params.append(normalize_entity_name(relation_type).replace(" ", "_"))
+    where = "WHERE " + " AND ".join(conditions) if conditions else ""
+    rows = conn.execute(
+        f"""
+        SELECT edge.edge_id, edge.relation_type, edge.confidence,
+               edge.support_count, edge.valid_from, edge.valid_until,
+               edge.decay_weight, edge.classifier_version, edge.metadata,
+               edge.created_at, edge.updated_at,
+               source.entity_id, source.entity_type, source.canonical_name,
+               target.entity_id, target.entity_type, target.canonical_name
+        FROM memory_entity_edges edge
+        JOIN memory_entities source ON source.id = edge.source_entity_id
+        JOIN memory_entities target ON target.id = edge.target_entity_id
+        {where}
+        ORDER BY edge.support_count DESC, edge.confidence DESC, edge.created_at DESC
+        LIMIT ?
+        """,
+        params + [max(0, min(limit, 500))],
+    ).fetchall()
+    return [
+        {
+            "edge_id": row[0],
+            "relation_type": row[1],
+            "confidence": row[2],
+            "support_count": row[3],
+            "valid_from": row[4],
+            "valid_until": row[5],
+            "decay_weight": row[6],
+            "classifier_version": row[7],
+            "metadata": _json_object(row[8]),
+            "created_at": row[9],
+            "updated_at": row[10],
+            "source": {
+                "entity_id": row[11],
+                "entity_type": row[12],
+                "canonical_name": row[13],
+            },
+            "target": {
+                "entity_id": row[14],
+                "entity_type": row[15],
+                "canonical_name": row[16],
+            },
+        }
+        for row in rows
+    ]
+
+
 def memory_file_entity_links(conn: sqlite3.Connection, *, file_path: str) -> list[dict]:
     """List entity links for an indexed memory file."""
     row = _find_memory_file(conn, file_path)

@@ -89,6 +89,7 @@ Owns the local entity graph lifted from OB1:
 - frontmatter-derived entity indexing
 - enhancement-derived entity linking
 - shared-file connection queries
+- explicit entity-edge queries
 - typed entity-edge upserts
 
 Rules:
