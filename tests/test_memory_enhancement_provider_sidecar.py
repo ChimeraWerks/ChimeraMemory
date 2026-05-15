@@ -13,6 +13,8 @@ from chimera_memory.memory_enhancement_oauth import (
 )
 from chimera_memory.memory_enhancement_provider_sidecar import (
     ResolvingMemoryEnhancementProviderClient,
+    _google_cloudcode_endpoint,
+    _openai_codex_stream_text,
 )
 
 
@@ -80,16 +82,20 @@ def test_resolving_provider_client_uses_anthropic_oauth_transport(monkeypatch, t
 def test_resolving_provider_client_uses_openai_codex_oauth_transport(monkeypatch, tmp_path: Path):
     captured: dict[str, object] = {}
 
-    def fake_post_json(endpoint, payload, headers, *, opener, timeout_seconds):
+    def fake_post_openai_codex_stream(endpoint, payload, headers, *, opener, timeout_seconds, model_client):
         captured["endpoint"] = endpoint
         captured["payload"] = payload
         captured["headers"] = headers
         captured["timeout_seconds"] = timeout_seconds
-        return {"output_text": json.dumps({"summary": "ok"})}
+        return json.dumps({"summary": "ok"})
 
     monkeypatch.setattr(
         "chimera_memory.memory_enhancement_provider_sidecar._memory_model_client_module",
-        lambda: _fake_model_client(fake_post_json),
+        lambda: _fake_model_client(lambda *_args, **_kwargs: {}),
+    )
+    monkeypatch.setattr(
+        "chimera_memory.memory_enhancement_provider_sidecar._post_openai_codex_stream",
+        fake_post_openai_codex_stream,
     )
     store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
     store.upsert(
@@ -124,11 +130,24 @@ def test_resolving_provider_client_uses_openai_codex_oauth_transport(monkeypatch
     assert isinstance(payload, dict)
     assert payload["model"] == "gpt-5.4"
     assert payload["store"] is False
+    assert payload["stream"] is True
     assert payload["input"][0]["role"] == "user"
     assert payload["input"][0]["content"][0]["type"] == "input_text"
     assert payload["reasoning"] == {"effort": "medium", "summary": "auto"}
     assert payload["include"] == ["reasoning.encrypted_content"]
     assert payload["prompt_cache_key"] == "cm-memory-enhancement-openai-gpt-5.4"
+
+
+def test_openai_codex_stream_text_reads_completed_response():
+    raw = "\n".join(
+        (
+            'data: {"type":"response.output_text.delta","delta":"partial"}',
+            'data: {"type":"response.completed","response":{"output_text":"{\\"summary\\":\\"ok\\"}"}}',
+            "data: [DONE]",
+        )
+    ).encode("utf-8")
+
+    assert _openai_codex_stream_text(raw) == '{"summary":"ok"}'
 
 
 def test_resolving_provider_client_refreshes_expiring_oauth_before_model_call(monkeypatch, tmp_path: Path):
@@ -271,6 +290,21 @@ def test_google_cloudcode_discovers_project_when_hermes_pool_credential_has_none
     assert captured[0]["endpoint"] == "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
     assert captured[1]["endpoint"] == "https://cloudcode-pa.googleapis.com/v1internal:generateContent"
     assert captured[1]["payload"]["project"] == "project-discovered"
+
+
+def test_google_cloudcode_endpoint_ignores_public_gemini_base_url():
+    credential = MemoryEnhancementOAuthCredential(
+        name="google-memory",
+        provider_id="google",
+        source="hermes_auth_pool",
+        access_token="TEST_ONLY_GOOGLE_ACCESS",
+        transport="google_cloudcode",
+        base_url="https://generativelanguage.googleapis.com/v1beta",
+    )
+
+    endpoint = _google_cloudcode_endpoint({"endpoint": ""}, credential, "loadCodeAssist")
+
+    assert endpoint == "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
 
 
 def _invocation(provider_id: str, model: str, credential_ref: str):

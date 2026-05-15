@@ -269,9 +269,7 @@ def _user_prompt(invocation: Mapping[str, Any]) -> str:
 
 def _metadata_from_model_text(value: object) -> Mapping[str, Any]:
     text = str(value or "").strip()
-    match = _FENCE_RE.match(text)
-    if match:
-        text = match.group("body").strip()
+    text = _extract_json_text(text)
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -279,6 +277,22 @@ def _metadata_from_model_text(value: object) -> Mapping[str, Any]:
     if not isinstance(payload, dict):
         raise RuntimeError("memory enhancement provider returned invalid JSON")
     return normalize_memory_enhancement_response(payload)
+
+
+def _extract_json_text(text: str) -> str:
+    match = _FENCE_RE.search(text)
+    if match:
+        return match.group("body").strip()
+    if text.startswith("{"):
+        return text
+    start = text.find("{")
+    if start < 0:
+        return text
+    try:
+        _, end = json.JSONDecoder().raw_decode(text[start:])
+    except json.JSONDecodeError:
+        return text
+    return text[start : start + end].strip()
 
 
 def _post_json(

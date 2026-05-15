@@ -13,6 +13,7 @@ from chimera_memory.memory_enhancement_model_client import (
     OPENAI_CHAT_COMPLETIONS_ENDPOINT,
     OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
     ProviderModelMemoryEnhancementClient,
+    _metadata_from_model_text,
 )
 from chimera_memory.memory_enhancement_provider import (
     build_enhancement_invocation,
@@ -55,6 +56,15 @@ def _invocation(provider_order: str, **env: str) -> dict[str, object]:
         }
     )
     return build_enhancement_invocation(_request_payload(), plan)
+
+
+def test_metadata_from_model_text_extracts_json_from_wrapped_text() -> None:
+    metadata = _metadata_from_model_text(
+        'Here is the metadata:\n```json\n{"summary":"ok","topics":["oauth"]}\n```'
+    )
+
+    assert metadata["summary"] == "ok"
+    assert metadata["topics"] == ["oauth"]
 
 
 def test_openai_provider_client_builds_json_mode_chat_request_without_leaking_token() -> None:

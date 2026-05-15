@@ -169,9 +169,10 @@ def _invoke_openai_codex(
         "reasoning": {"effort": "medium", "summary": "auto"},
         "include": ["reasoning.encrypted_content"],
         "store": False,
+        "stream": True,
         "prompt_cache_key": cache_key,
     }
-    response = model_client._post_json(
+    response_text = _post_openai_codex_stream(
         _openai_codex_endpoint(provider, credential),
         payload,
         {
@@ -182,8 +183,81 @@ def _invoke_openai_codex(
         },
         opener=opener or model_client.urllib.request.urlopen,
         timeout_seconds=budget.timeout_seconds,
+        model_client=model_client,
     )
-    return model_client._metadata_from_model_text(_openai_codex_response_text(response))
+    return model_client._metadata_from_model_text(response_text)
+
+
+def _post_openai_codex_stream(
+    endpoint: str,
+    payload: Mapping[str, Any],
+    headers: Mapping[str, str],
+    *,
+    opener: Callable[..., Any],
+    timeout_seconds: int,
+    model_client: Any,
+) -> str:
+    safe_endpoint = model_client._validate_endpoint(endpoint)
+    request = model_client.urllib.request.Request(
+        safe_endpoint,
+        data=json.dumps(dict(payload), separators=(",", ":"), sort_keys=True).encode("utf-8"),
+        headers={
+            "Accept": "text/event-stream",
+            "Content-Type": "application/json",
+            **dict(headers),
+        },
+        method="POST",
+    )
+    try:
+        with opener(request, timeout=timeout_seconds) as response:
+            raw_body = response.read()
+    except model_client.urllib.error.HTTPError as exc:
+        raise RuntimeError(model_client._http_failure_category(exc.code)) from exc
+    except model_client.urllib.error.URLError as exc:
+        raise RuntimeError("memory enhancement provider unavailable") from exc
+    except TimeoutError as exc:
+        raise RuntimeError("memory enhancement provider timeout") from exc
+    return _openai_codex_stream_text(raw_body)
+
+
+def _openai_codex_stream_text(raw_body: bytes) -> str:
+    try:
+        text = raw_body.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError("memory enhancement provider returned invalid JSON") from exc
+    deltas: list[str] = []
+    completed_text = ""
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line.startswith("data:"):
+            continue
+        data = line.removeprefix("data:").strip()
+        if not data or data == "[DONE]":
+            continue
+        try:
+            event = json.loads(data)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("memory enhancement provider returned invalid JSON") from exc
+        if not isinstance(event, Mapping):
+            continue
+        event_type = str(event.get("type") or "")
+        if event_type.endswith(".delta"):
+            delta = event.get("delta")
+            if isinstance(delta, str):
+                deltas.append(delta)
+        elif event_type.endswith(".done"):
+            done_text = event.get("text")
+            if isinstance(done_text, str) and done_text.strip():
+                completed_text = done_text
+        elif event_type == "response.completed":
+            response = event.get("response") if isinstance(event.get("response"), Mapping) else {}
+            response_text = _openai_codex_response_text(response)
+            if response_text:
+                completed_text = response_text
+    output = completed_text or "".join(deltas).strip()
+    if not output:
+        raise RuntimeError("memory enhancement provider returned invalid JSON")
+    return output
 
 
 def _openai_codex_cache_key(provider: Mapping[str, str]) -> str:
@@ -376,8 +450,18 @@ def _google_cloudcode_endpoint(
     explicit = str(provider.get("endpoint") or "").strip()
     if explicit and method == "generateContent":
         return explicit
-    base_url = credential.base_url.rstrip("/") if credential.base_url else GOOGLE_CLOUDCODE_ENDPOINT.rsplit("/", 1)[0]
+    base_url = _google_cloudcode_base_url(credential)
     return f"{base_url}/v1internal:{method}"
+
+
+def _google_cloudcode_base_url(credential: MemoryEnhancementOAuthCredential) -> str:
+    raw = str(credential.base_url or "").strip().rstrip("/")
+    default = GOOGLE_CLOUDCODE_ENDPOINT.rsplit("/", 1)[0]
+    if not raw or "cloudcode-pa.googleapis.com" not in raw:
+        return default
+    if raw.endswith("/v1internal"):
+        return raw.removesuffix("/v1internal")
+    return raw
 
 
 def _google_cloudcode_project_from_response(response: Mapping[str, Any]) -> str:
