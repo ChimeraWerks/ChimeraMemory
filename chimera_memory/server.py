@@ -1076,6 +1076,57 @@ def create_server():
         return "\n".join(lines)
 
     @server.tool()
+    def memory_live_retrieval_check(
+        current_context: str,
+        previous_context: str = "",
+        persona: str = "",
+        limit: int = 5,
+        shift_threshold: float = 0.55,
+        force: bool = False,
+        include_restricted: bool = False,
+    ) -> str:
+        """Dry-run proactive recall on topic shifts without injecting results into prompts."""
+        _ensure_memory_indexed()
+        from .memory import memory_live_retrieval_check as _live_retrieval
+
+        selected_persona = (persona or os.environ.get("TRANSCRIPT_PERSONA") or "").strip() or None
+        result = _live_retrieval(
+            _get_memory_conn(),
+            current_context=current_context,
+            previous_context=previous_context,
+            persona=selected_persona,
+            limit=limit,
+            shift_threshold=shift_threshold,
+            force=force,
+            include_restricted=include_restricted,
+            actor="mcp",
+        )
+        plan = result.get("plan") or {}
+        if not result.get("retrieved"):
+            return (
+                f"Live retrieval skipped: {result.get('reason', 'unknown')} "
+                f"shift={plan.get('shift_score')} threshold={plan.get('shift_threshold')}"
+            )
+        results = result.get("results", [])
+        if not results:
+            return (
+                f"Live retrieval miss. trace={result.get('trace_id')} "
+                f"query='{plan.get('query_text', '')}'"
+            )
+        lines = [
+            f"Live retrieval suggestions. trace={result.get('trace_id')} "
+            f"query='{plan.get('query_text', '')}'",
+        ]
+        for row in results[: max(0, min(limit, 20))]:
+            lines.append(
+                f"- {row['relative_path']} ({row['persona']}) "
+                f"importance={row.get('importance')} type={row.get('type')}"
+            )
+            if row.get("snippet"):
+                lines.append(f"  {row['snippet']}")
+        return "\n".join(lines)
+
+    @server.tool()
     def memory_enhancement_provider_plan() -> str:
         """Show the safe provider-resolution plan for memory enhancement."""
         from .memory_enhancement_provider import resolve_enhancement_provider_plan, safe_provider_receipt

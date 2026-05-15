@@ -63,6 +63,22 @@ Rules:
 - This module must not import review or enhancement queue modules.
 - Audit payloads should be structured and safe. Do not write raw secrets.
 
+### `memory_live_retrieval.py`
+
+Owns live-retrieval planning lifted from OB1's live retrieval recipe:
+
+- topic-shift cue extraction
+- dry-run proactive recall suggestions
+- silent miss behavior
+- recall trace and audit logging for tuning
+
+Rules:
+
+- Live retrieval must not inject results into prompts by itself.
+- Misses should be logged but quiet to the caller unless explicitly queried.
+- Exclude restricted memories by default.
+- Keep this local and deterministic unless a future classifier adapter is explicitly added.
+
 ### `memory_review.py`
 
 Owns human review workflows:
@@ -223,6 +239,10 @@ Allowed direction:
 memory.py facade
   imports focused modules
 
+memory_live_retrieval.py
+  imports memory_observability.py
+  imports sanitizer.py
+
 memory_enhancement_queue.py
   imports memory_frontmatter.py
   imports memory_observability.py
@@ -272,6 +292,7 @@ Avoid:
 - Schema: `tests/test_memory_schema_hygiene.py`
 - Governance: `tests/test_memory_governance.py`
 - Observability: `tests/test_memory_observability.py`
+- Live retrieval: `tests/test_memory_live_retrieval.py`
 - Review: `tests/test_memory_review.py`
 - Auto-capture: `tests/test_memory_auto_capture.py`
 - Entities: `tests/test_memory_entities.py`

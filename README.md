@@ -248,6 +248,7 @@ Each PA apply writes a backup, a receipt, and updates the install-state ledger .
 |------|-------------|
 | `memory_recall_trace_query` | Inspect recent recall traces and optional returned items. Useful for tuning retrieval quality. |
 | `memory_audit_query` | Inspect memory audit events such as recall, review, and enhancement operations. |
+| `memory_live_retrieval_check` | Dry-run proactive recall on topic shifts, silent on miss and logged for tuning. |
 | `memory_review_pending` | List generated or restricted memories that need review before instructional use. |
 | `memory_review_action` | Confirm, restrict, reject, stale, merge, dispute, or supersede a memory review item. |
 | `memory_auto_capture_session_close` | Plan or write an evidence-only session-close memory with ACT NOW items. |

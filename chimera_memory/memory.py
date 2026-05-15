@@ -50,6 +50,7 @@ from .memory_governance import (
     SENSITIVITY_TIERS,
     governance_from_frontmatter,
 )
+from .memory_live_retrieval import memory_live_retrieval_check
 from .memory_observability import (
     _json_object,
     _json_text,
