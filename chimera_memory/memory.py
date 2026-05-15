@@ -43,6 +43,7 @@ from .memory_file_edges import (
     memory_file_edge_upsert,
 )
 from .memory_import_chatgpt import memory_import_chatgpt_export as _memory_import_chatgpt_export
+from .memory_import_gmail import memory_import_gmail_mbox as _memory_import_gmail_mbox
 from .memory_import_obsidian import memory_import_obsidian_vault as _memory_import_obsidian_vault
 from .memory_governance import (
     INSTRUCTION_GRADE_PROVENANCE,
@@ -848,6 +849,34 @@ def memory_import_obsidian_vault(
         conn,
         personas_dir,
         vault_path=vault_path,
+        persona=persona,
+        index_file_func=index_file,
+        pyramid_summary_builder=memory_pyramid_summary_build,
+        limit=limit,
+        write=write,
+        force=force,
+        build_pyramid=build_pyramid,
+        actor=actor,
+    )
+
+
+def memory_import_gmail_mbox(
+    conn: sqlite3.Connection,
+    personas_dir: Path,
+    *,
+    import_path: str,
+    persona: str,
+    limit: int = 200,
+    write: bool = False,
+    force: bool = False,
+    build_pyramid: bool = True,
+    actor: str = "agent",
+) -> dict:
+    """Plan or write governed memories from Gmail mbox exports."""
+    return _memory_import_gmail_mbox(
+        conn,
+        personas_dir,
+        import_path=import_path,
         persona=persona,
         index_file_func=index_file,
         pyramid_summary_builder=memory_pyramid_summary_build,

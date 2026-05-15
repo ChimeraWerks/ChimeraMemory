@@ -964,6 +964,52 @@ def create_server():
         )
 
     @server.tool()
+    def memory_import_gmail_mbox(
+        import_path: str,
+        persona: str = "",
+        limit: int = 200,
+        write: bool = False,
+        force: bool = False,
+        build_pyramid: bool = True,
+    ) -> str:
+        """Plan or import Gmail / Google Takeout mbox messages into governed local memory files."""
+        _ensure_memory_indexed()
+        from .memory import memory_import_gmail_mbox as _import_gmail
+
+        selected_persona = (persona or os.environ.get("TRANSCRIPT_PERSONA") or "").strip()
+        if not selected_persona:
+            return "Gmail import failed: persona is required"
+        personas_dir = Path(os.environ.get("CHIMERA_PERSONAS_DIR", "C:/Github/ChimeraPersonas/personas"))
+        result = _import_gmail(
+            _get_memory_conn(),
+            personas_dir,
+            import_path=import_path,
+            persona=selected_persona,
+            limit=limit,
+            write=write,
+            force=force,
+            build_pyramid=build_pyramid,
+            actor="mcp",
+        )
+        if not result.get("ok"):
+            return f"Gmail import failed: {result.get('error', 'unknown error')}"
+        if not write:
+            summary = result.get("summary", {})
+            lines = [f"Gmail import plan: {summary.get('plan_count', 0)} message(s) from {import_path}"]
+            for plan in result.get("plans", [])[: max(0, min(limit, 20))]:
+                lines.append(
+                    f"- {plan.get('relative_path')} subject={plan.get('subject')} "
+                    f"source={plan.get('source_path')}"
+                )
+            return "\n".join(lines)
+        summary = result.get("summary", {})
+        return (
+            f"Gmail import complete: written={summary.get('written_count', 0)} "
+            f"skipped={summary.get('skipped_count', 0)} failed={summary.get('failed_count', 0)} "
+            f"pyramid_built={summary.get('pyramid_built_count', 0)}"
+        )
+
+    @server.tool()
     def memory_profile_export(
         output_dir: str = "",
         persona: str = "",

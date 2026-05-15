@@ -198,6 +198,22 @@ Rules:
 - The facade owns indexing written files, building pyramid summaries, and audit completion events.
 - Skip Obsidian internals such as `.obsidian/`.
 
+### `memory_import_gmail.py`
+
+Owns Gmail / Google Takeout mbox ingestion scaffolding:
+
+- mbox loading from a file, directory, or zip export
+- email header and body extraction
+- governed markdown planning
+- safe file writing under `memory/imports/gmail/`
+
+Rules:
+
+- Imported Gmail messages are imported provenance, pending review, restricted, and evidence-only by default.
+- Import helpers must not import `memory.py`.
+- The facade owns indexing written files, building pyramid summaries, and audit completion events.
+- Skip attachments. The baseline importer stores text bodies only.
+
 ### `memory_profile_export.py`
 
 Owns deterministic portable context exports from reviewed memory:
@@ -350,6 +366,11 @@ memory_import_obsidian.py
   imports memory_observability.py
   imports sanitizer.py
 
+memory_import_gmail.py
+  imports memory_auto_capture.py
+  imports memory_observability.py
+  imports sanitizer.py
+
 memory_profile_export.py
   imports memory_frontmatter.py
   imports memory_observability.py
@@ -387,6 +408,7 @@ Avoid:
 - Pyramid summaries: `tests/test_memory_pyramid.py`
 - ChatGPT import: `tests/test_memory_import_chatgpt.py`
 - Obsidian import: `tests/test_memory_import_obsidian.py`
+- Gmail import: `tests/test_memory_import_gmail.py`
 - Portable profile export: `tests/test_memory_profile_export.py`
 - Sidecar contract: `tests/test_memory_enhancement.py`
 - Provider policy: `tests/test_memory_enhancement_provider.py`
