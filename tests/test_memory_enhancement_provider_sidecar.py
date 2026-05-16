@@ -527,6 +527,114 @@ def test_google_hermes_oauth_shim_persists_project_discovery(tmp_path: Path):
     assert stored.extra["managed_project_id"] == "managed-discovered"
 
 
+def test_google_hermes_oauth_shim_refreshes_expired_bound_credential(monkeypatch, tmp_path: Path):
+    from chimera_memory import hermes_google_oauth
+
+    store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
+    credential = MemoryEnhancementOAuthCredential(
+        name="google-memory",
+        provider_id="google",
+        source="hermes_auth_pool",
+        access_token="TEST_ONLY_OLD_GOOGLE_ACCESS",
+        refresh_token="TEST_ONLY_OLD_GOOGLE_REFRESH",
+        expires_at_ms=1,
+        transport="google_cloudcode",
+        project_id="project-test",
+    )
+    store.upsert(credential)
+    seen_refresh_tokens: list[str] = []
+
+    def refresher(credential: MemoryEnhancementOAuthCredential) -> MemoryEnhancementOAuthCredential:
+        seen_refresh_tokens.append(credential.refresh_token)
+        return MemoryEnhancementOAuthCredential(
+            name=credential.name,
+            provider_id=credential.provider_id,
+            source=credential.source,
+            access_token="TEST_ONLY_NEW_GOOGLE_ACCESS",
+            refresh_token="TEST_ONLY_NEW_GOOGLE_REFRESH",
+            expires_at_ms=4_200_000_000_000,
+            transport=credential.transport,
+            project_id=credential.project_id,
+            account_label=credential.account_label,
+            extra=dict(credential.extra),
+        )
+
+    monkeypatch.setattr(
+        hermes_google_oauth,
+        "refresh_memory_enhancement_oauth_credential",
+        refresher,
+    )
+
+    with hermes_google_oauth.bind_credential(credential, store=store):
+        access_token = hermes_google_oauth.get_valid_access_token()
+        loaded = hermes_google_oauth.load_credentials()
+
+    stored = store.get("google-memory", provider_id="google")
+    assert access_token == "TEST_ONLY_NEW_GOOGLE_ACCESS"
+    assert loaded is not None
+    assert loaded.access_token == "TEST_ONLY_NEW_GOOGLE_ACCESS"
+    assert stored.access_token == "TEST_ONLY_NEW_GOOGLE_ACCESS"
+    assert stored.refresh_token == "TEST_ONLY_NEW_GOOGLE_REFRESH"
+    assert seen_refresh_tokens == ["TEST_ONLY_OLD_GOOGLE_REFRESH"]
+
+
+def test_google_hermes_oauth_shim_exposes_hermes_credential_fields(tmp_path: Path):
+    from chimera_memory import hermes_google_oauth
+
+    credential = MemoryEnhancementOAuthCredential(
+        name="google-memory",
+        provider_id="google",
+        source="hermes_auth_pool",
+        access_token="TEST_ONLY_GOOGLE_ACCESS",
+        refresh_token="TEST_ONLY_GOOGLE_REFRESH",
+        expires_at_ms=1,
+        transport="google_cloudcode",
+        project_id="project-test",
+        account_label="person@example.invalid",
+        extra={"managed_project_id": "managed-test"},
+    )
+
+    with hermes_google_oauth.bind_credential(credential):
+        loaded = hermes_google_oauth.load_credentials()
+
+    assert loaded is not None
+    assert loaded.access_token == "TEST_ONLY_GOOGLE_ACCESS"
+    assert loaded.refresh_token == "TEST_ONLY_GOOGLE_REFRESH"
+    assert loaded.expires_ms == 1
+    assert loaded.email == "person@example.invalid"
+    assert loaded.project_id == "project-test"
+    assert loaded.managed_project_id == "managed-test"
+    assert loaded.expires_unix_seconds() == 0.001
+    assert loaded.access_token_expired(skew_seconds=0) is True
+
+
+def test_google_hermes_oauth_project_env_matches_hermes_precedence(monkeypatch):
+    from chimera_memory import hermes_google_oauth
+
+    for key in (
+        "HERMES_GEMINI_PROJECT_ID",
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_PROJECT_ID",
+        "GOOGLE_CLOUDCODE_PROJECT",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    monkeypatch.setenv("HERMES_GEMINI_PROJECT_ID", "project-hermes")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "project-cloud")
+    monkeypatch.setenv("GOOGLE_CLOUD_PROJECT_ID", "project-cloud-id")
+    assert hermes_google_oauth.resolve_project_id_from_env() == "project-hermes"
+
+    monkeypatch.delenv("HERMES_GEMINI_PROJECT_ID")
+    assert hermes_google_oauth.resolve_project_id_from_env() == "project-cloud"
+
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT")
+    assert hermes_google_oauth.resolve_project_id_from_env() == "project-cloud-id"
+
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT_ID")
+    monkeypatch.setenv("GOOGLE_CLOUDCODE_PROJECT", "project-cloudcode")
+    assert hermes_google_oauth.resolve_project_id_from_env() == ""
+
+
 def test_google_cloudcode_endpoint_ignores_public_gemini_base_url():
     credential = MemoryEnhancementOAuthCredential(
         name="google-memory",
