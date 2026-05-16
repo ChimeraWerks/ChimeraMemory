@@ -13,7 +13,8 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +37,8 @@ POOL_API_KEY_REF_SCHEME = "secret"
 AUTH_TYPE_OAUTH = "oauth"
 AUTH_TYPE_API_KEY = "api_key"
 POOL_AUTH_TYPES = frozenset((AUTH_TYPE_OAUTH, AUTH_TYPE_API_KEY))
+STATUS_OK = "ok"
+STATUS_EXHAUSTED = "exhausted"
 
 _OAUTH_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:\-]{0,119}$")
 _DEFAULT_STATE_ROOT = Path(".chimera-memory") / "oauth"
@@ -43,6 +46,9 @@ _DEFAULT_AUTH_STORE_NAME = "auth.json"
 _LOCK_TIMEOUT_SECONDS = 30.0
 _ACCESS_TOKEN_REFRESH_SKEW_MS = 120_000
 _TOKEN_REQUEST_TIMEOUT_SECONDS = 20
+_EXHAUSTED_TTL_401_SECONDS = 5 * 60
+_EXHAUSTED_TTL_429_SECONDS = 60 * 60
+_EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60
 
 ANTHROPIC_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
@@ -203,6 +209,9 @@ class MemoryEnhancementPooledCredential:
             "transport": self.transport,
             "source": self.source,
             "active": False,
+            "last_status": self.last_status or "",
+            "last_error_code": int(self.last_error_code) if self.last_error_code is not None else 0,
+            "cooldown_until": _exhausted_until(self) or 0,
             "value_present": bool(self.access_token),
             "refresh_token_present": bool(self.refresh_token),
             "expires_at_ms_present": self.expires_at_ms is not None,
@@ -418,6 +427,59 @@ class MemoryEnhancementOAuthStore:
             return credentials[0]
         raise MemoryEnhancementCredentialResolutionError("memory enhancement active credential unavailable")
 
+    def select_pooled(
+        self,
+        provider_id: str,
+        *,
+        auth_type: str = "",
+    ) -> MemoryEnhancementPooledCredential:
+        require_valid_pool_provider_id(provider_id)
+        if auth_type and auth_type not in POOL_AUTH_TYPES:
+            raise ProtocolValidationError("memory enhancement credential auth type unsupported")
+        with _store_lock(self.path):
+            payload = self._read_unlocked()
+            credential, changed = _select_pooled_credential_from_payload(payload, provider_id, auth_type=auth_type)
+            if changed:
+                self._write_unlocked(payload)
+            return credential
+
+    def mark_pooled_exhausted(
+        self,
+        name: str,
+        *,
+        provider_id: str,
+        status_code: int | None = None,
+        reason: str = "",
+        message: str = "",
+        reset_at: object = None,
+    ) -> MemoryEnhancementPooledCredential | None:
+        require_valid_oauth_name(name)
+        require_valid_pool_provider_id(provider_id)
+        with _store_lock(self.path):
+            payload = self._read_unlocked()
+            credential = _get_pooled_credential_from_store_payload(payload, name, provider_id=provider_id)
+            updated = _exhausted_pooled_credential(
+                credential,
+                status_code=status_code,
+                reason=reason,
+                message=message,
+                reset_at=reset_at,
+            )
+            _upsert_pooled_credential_in_payload(payload, updated)
+            try:
+                next_credential, changed = _select_pooled_credential_from_payload(
+                    payload,
+                    provider_id,
+                    auth_type=credential.auth_type,
+                )
+            except MemoryEnhancementCredentialResolutionError:
+                next_credential = None
+                changed = False
+            if changed:
+                _upsert_pooled_credential_in_payload(payload, next_credential)
+            self._write_unlocked(payload)
+            return next_credential
+
     def get(self, name: str, *, provider_id: str = "") -> MemoryEnhancementOAuthCredential:
         require_valid_oauth_name(name)
         with _store_lock(self.path):
@@ -493,6 +555,50 @@ def _get_credential_from_store_payload(
         auth_type=AUTH_TYPE_OAUTH,
     )
     return credential.to_oauth_credential()
+
+
+def _select_pooled_credential_from_payload(
+    payload: dict[str, Any],
+    provider_id: str,
+    *,
+    auth_type: str = "",
+) -> tuple[MemoryEnhancementPooledCredential, bool]:
+    require_valid_pool_provider_id(provider_id)
+    if auth_type and auth_type not in POOL_AUTH_TYPES:
+        raise ProtocolValidationError("memory enhancement credential auth type unsupported")
+    candidates = [
+        credential
+        for credential in _pooled_credentials_from_payload(payload, provider_id)
+        if not auth_type or credential.auth_type == auth_type
+    ]
+    if not candidates:
+        raise MemoryEnhancementCredentialResolutionError("memory enhancement active credential unavailable")
+    active_name = _active_credential_name_from_payload(payload, provider_id)
+    ordered = sorted(
+        candidates,
+        key=lambda credential: (0 if credential.id == active_name else 1, credential.priority, credential.id),
+    )
+    changed = False
+    for credential in ordered:
+        available, cleared = _pooled_credential_available(credential)
+        if cleared:
+            credential = _cleared_pooled_credential_status(credential)
+            _upsert_pooled_credential_in_payload(payload, credential)
+            changed = True
+        if available:
+            return credential, changed
+    raise MemoryEnhancementCredentialResolutionError("memory enhancement active credential exhausted")
+
+
+def _pooled_credentials_from_payload(payload: Mapping[str, Any], provider_id: str) -> tuple[MemoryEnhancementPooledCredential, ...]:
+    pool = payload.get("credential_pool") if isinstance(payload.get("credential_pool"), Mapping) else {}
+    bucket = pool.get(provider_id) if isinstance(pool, Mapping) else []
+    credentials: list[MemoryEnhancementPooledCredential] = []
+    if isinstance(bucket, list):
+        for raw in bucket:
+            if isinstance(raw, Mapping):
+                credentials.append(MemoryEnhancementPooledCredential.from_dict(provider_id, raw))
+    return tuple(sorted(credentials, key=lambda item: (item.priority, item.id)))
 
 
 def _get_pooled_credential_from_store_payload(
@@ -615,6 +721,120 @@ def _active_credential_name_from_payload(payload: Mapping[str, Any], provider_id
         if isinstance(name, str) and name in valid_names:
             return name
     return ""
+
+
+def _pooled_credential_available(credential: MemoryEnhancementPooledCredential) -> tuple[bool, bool]:
+    if credential.last_status != STATUS_EXHAUSTED:
+        return True, False
+    exhausted_until = _exhausted_until(credential)
+    if exhausted_until is not None and time.time() < exhausted_until:
+        return False, False
+    return True, True
+
+
+def _cleared_pooled_credential_status(credential: MemoryEnhancementPooledCredential) -> MemoryEnhancementPooledCredential:
+    return replace(
+        credential,
+        last_status=STATUS_OK,
+        last_status_at=None,
+        last_error_code=None,
+        last_error_reason=None,
+        last_error_message=None,
+        last_error_reset_at=None,
+    )
+
+
+def _exhausted_pooled_credential(
+    credential: MemoryEnhancementPooledCredential,
+    *,
+    status_code: int | None,
+    reason: str,
+    message: str,
+    reset_at: object,
+) -> MemoryEnhancementPooledCredential:
+    normalized = _normalize_exhaustion_context(reason=reason, message=message, reset_at=reset_at)
+    return replace(
+        credential,
+        last_status=STATUS_EXHAUSTED,
+        last_status_at=time.time(),
+        last_error_code=int(status_code) if status_code is not None else None,
+        last_error_reason=normalized.get("reason"),
+        last_error_message=normalized.get("message"),
+        last_error_reset_at=normalized.get("reset_at"),
+    )
+
+
+def _normalize_exhaustion_context(*, reason: str, message: str, reset_at: object) -> dict[str, Any]:
+    normalized: dict[str, Any] = {}
+    reason_text = str(reason or "").strip()
+    if reason_text:
+        normalized["reason"] = reason_text[:160]
+    message_text = str(message or "").strip()
+    if message_text:
+        normalized["message"] = message_text[:500]
+    parsed_reset_at = _parse_absolute_timestamp(reset_at)
+    if parsed_reset_at is None and message_text:
+        retry_delay = _extract_retry_delay_seconds(message_text)
+        if retry_delay is not None:
+            parsed_reset_at = time.time() + retry_delay
+    if parsed_reset_at is not None:
+        normalized["reset_at"] = parsed_reset_at
+    return normalized
+
+
+def _exhausted_ttl(status_code: int | None) -> int:
+    if status_code == 401:
+        return _EXHAUSTED_TTL_401_SECONDS
+    if status_code == 429:
+        return _EXHAUSTED_TTL_429_SECONDS
+    return _EXHAUSTED_TTL_DEFAULT_SECONDS
+
+
+def _exhausted_until(credential: MemoryEnhancementPooledCredential) -> float | None:
+    if credential.last_status != STATUS_EXHAUSTED:
+        return None
+    reset_at = _parse_absolute_timestamp(credential.last_error_reset_at)
+    if reset_at is not None:
+        return reset_at
+    if credential.last_status_at is not None:
+        return float(credential.last_status_at) + _exhausted_ttl(credential.last_error_code)
+    return None
+
+
+def _parse_absolute_timestamp(value: object) -> float | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (int, float)):
+        numeric = float(value)
+        if numeric <= 0:
+            return None
+        return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
+    if isinstance(value, str):
+        raw = value.strip()
+        if not raw:
+            return None
+        try:
+            numeric = float(raw)
+        except ValueError:
+            numeric = None
+        if numeric is not None:
+            return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
+
+
+def _extract_retry_delay_seconds(message: str) -> float | None:
+    delay_match = re.search(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", message, re.IGNORECASE)
+    if delay_match:
+        value = float(delay_match.group(1))
+        return value / 1000.0 if delay_match.group(2).lower() == "ms" else value
+    sec_match = re.search(r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)", message, re.IGNORECASE)
+    if sec_match:
+        return float(sec_match.group(1))
+    return None
 
 
 @dataclass(frozen=True)
@@ -1023,6 +1243,8 @@ def require_valid_pooled_credential(credential: MemoryEnhancementPooledCredentia
     require_valid_pool_provider_id(credential.provider_id)
     if credential.auth_type not in POOL_AUTH_TYPES:
         raise ProtocolValidationError("memory enhancement credential auth type unsupported")
+    if credential.last_status not in {None, "", STATUS_OK, STATUS_EXHAUSTED}:
+        raise ProtocolValidationError("memory enhancement credential status unsupported")
     if int(credential.priority) < 0:
         raise ProtocolValidationError("memory enhancement credential priority is invalid")
     if not credential.source.strip():

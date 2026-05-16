@@ -19,8 +19,10 @@ from .memory_enhancement_credentials import (
 )
 from .memory_enhancement_oauth import (
     AUTH_TYPE_API_KEY,
+    AUTH_TYPE_OAUTH,
     MemoryEnhancementOAuthCredential,
     MemoryEnhancementOAuthStore,
+    MemoryEnhancementPooledCredential,
     OAuthMemoryEnhancementCredentialResolver,
 )
 from .memory_enhancement_google import GOOGLE_CLOUDCODE_MEMORY_DEFAULT_MODEL, google_cloudcode_model_candidates
@@ -85,11 +87,11 @@ class ResolvingMemoryEnhancementProviderClient:
         ref = MemoryEnhancementCredentialRef.parse(credential_ref)
         if ref.scheme == "oauth":
             credential = self._oauth_resolver.resolve_oauth(ref, provider_id=_oauth_provider_id(provider_id))
-            return self._invoke_oauth(invocation, provider, credential)
+            return self._invoke_with_pooled_failover(invocation, provider, credential)
         if ref.scheme == "secret":
             pooled = self._resolve_pooled_api_key(ref, provider_id=provider_id)
             if pooled:
-                return self._api_key_client_factory(pooled.access_token).invoke(invocation)
+                return self._invoke_api_key_with_pooled_failover(invocation, provider, pooled)
         resolved = self._credential_resolver.resolve(ref)
         return self._api_key_client_factory(resolved.value).invoke(invocation)
 
@@ -107,6 +109,68 @@ class ResolvingMemoryEnhancementProviderClient:
         if credential.auth_type != AUTH_TYPE_API_KEY:
             return None
         return credential
+
+    def _credential_store(self) -> MemoryEnhancementOAuthStore:
+        return self._oauth_resolver.store or MemoryEnhancementOAuthStore()
+
+    def _invoke_with_pooled_failover(
+        self,
+        invocation: Mapping[str, Any],
+        provider: Mapping[str, str],
+        credential: MemoryEnhancementOAuthCredential,
+    ) -> Mapping[str, Any]:
+        current = credential
+        attempted: set[str] = set()
+        while True:
+            attempted.add(current.name)
+            try:
+                return self._invoke_oauth(invocation, provider, current)
+            except RuntimeError as exc:
+                context = _pool_exhaustion_context(exc)
+                if context is None:
+                    raise
+                next_credential = self._credential_store().mark_pooled_exhausted(
+                    current.name,
+                    provider_id=current.provider_id,
+                    status_code=context["status_code"],
+                    reason=context["reason"],
+                    message=context["message"],
+                    reset_at=context["reset_at"],
+                )
+                if next_credential is None or next_credential.id in attempted or next_credential.auth_type != AUTH_TYPE_OAUTH:
+                    raise
+                current = self._oauth_resolver.resolve_oauth(
+                    next_credential.ref,
+                    provider_id=current.provider_id,
+                )
+
+    def _invoke_api_key_with_pooled_failover(
+        self,
+        invocation: Mapping[str, Any],
+        provider: Mapping[str, str],
+        credential: MemoryEnhancementPooledCredential,
+    ) -> Mapping[str, Any]:
+        current = credential
+        attempted: set[str] = set()
+        while True:
+            attempted.add(current.id)
+            try:
+                return self._api_key_client_factory(current.access_token).invoke(invocation)
+            except RuntimeError as exc:
+                context = _pool_exhaustion_context(exc)
+                if context is None:
+                    raise
+                next_credential = self._credential_store().mark_pooled_exhausted(
+                    current.id,
+                    provider_id=current.provider_id,
+                    status_code=context["status_code"],
+                    reason=context["reason"],
+                    message=context["message"],
+                    reset_at=context["reset_at"],
+                )
+                if next_credential is None or next_credential.id in attempted or next_credential.auth_type != AUTH_TYPE_API_KEY:
+                    raise
+                current = next_credential
 
     def _invoke_oauth(
         self,
@@ -190,6 +254,41 @@ def _provider(invocation: Mapping[str, Any]) -> dict[str, str]:
 
 def _credential_ref(provider: Mapping[str, str]) -> str:
     return str(provider.get("credential_ref") or "").strip()
+
+
+def _pool_exhaustion_context(exc: RuntimeError) -> dict[str, Any] | None:
+    message = str(exc)
+    text = message.lower()
+    status_code: int | None = None
+    reason = ""
+    if "rate limited" in text or "resource_exhausted" in text or "quota" in text or "exhausted" in text:
+        status_code = 429
+        reason = "rate_limit"
+    elif "auth failed" in text or "credential invalid" in text or "unauthorized" in text or "forbidden" in text:
+        status_code = 401
+        reason = "auth_failed"
+    elif "billing" in text or "payment" in text:
+        status_code = 402
+        reason = "billing"
+    if status_code is None:
+        return None
+    return {
+        "status_code": status_code,
+        "reason": reason,
+        "message": message,
+        "reset_at": _retry_reset_at_from_exception(exc),
+    }
+
+
+def _retry_reset_at_from_exception(exc: BaseException) -> object:
+    cause = exc.__cause__
+    headers = getattr(cause, "headers", None) or getattr(cause, "hdrs", None)
+    if headers is None:
+        return None
+    try:
+        return headers.get("Retry-After") or headers.get("X-RateLimit-Reset") or headers.get("X-Rate-Limit-Reset")
+    except Exception:
+        return None
 
 
 def _oauth_provider_id(provider_id: str) -> str:

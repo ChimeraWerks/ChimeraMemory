@@ -118,6 +118,44 @@ def test_resolve_provider_plan_uses_active_pooled_api_key_when_ref_missing(tmp_p
     assert plan.selected.uses_user_oauth is False
 
 
+def test_resolve_provider_plan_fails_over_from_exhausted_active_pool_credential(tmp_path) -> None:
+    store = MemoryEnhancementOAuthStore(tmp_path / "auth.json")
+    for name, token, priority in (
+        ("openrouter-primary", "TEST_ONLY_OPENROUTER_PRIMARY", 0),
+        ("openrouter-secondary", "TEST_ONLY_OPENROUTER_SECONDARY", 1),
+    ):
+        store.upsert_pooled(
+            MemoryEnhancementPooledCredential(
+                provider_id="openrouter",
+                id=name,
+                label=name,
+                auth_type=AUTH_TYPE_API_KEY,
+                priority=priority,
+                source="manual",
+                access_token=token,
+            )
+        )
+    store.set_active_pooled("openrouter-primary", provider_id="openrouter")
+    store.mark_pooled_exhausted(
+        "openrouter-primary",
+        provider_id="openrouter",
+        status_code=429,
+        reason="rate_limit",
+        message="rate limited",
+    )
+
+    plan = resolve_enhancement_provider_plan(
+        {
+            "CHIMERA_MEMORY_ENHANCEMENT_PROVIDER_ORDER": "openrouter,dry_run",
+            "CHIMERA_MEMORY_OAUTH_STORE": str(store.path),
+        }
+    )
+
+    assert plan.selected.provider_id == "openrouter"
+    assert plan.selected.credential_ref == "secret:openrouter-secondary"
+    assert plan.selected.uses_user_oauth is False
+
+
 def test_resolve_provider_plan_uses_local_model_when_enabled() -> None:
     plan = resolve_enhancement_provider_plan(
         {

@@ -74,6 +74,50 @@ def test_resolving_provider_client_resolves_pooled_api_key_ref_per_invocation(tm
     assert captured == ["TEST_ONLY_OPENROUTER_KEY"]
 
 
+def test_resolving_provider_client_marks_pooled_api_key_exhausted_and_retries_next(tmp_path: Path):
+    captured: list[str] = []
+
+    class FakeApiKeyClient:
+        def __init__(self, token: str) -> None:
+            self.token = token
+
+        def invoke(self, _invocation):
+            captured.append(self.token)
+            if self.token == "TEST_ONLY_OPENROUTER_PRIMARY":
+                raise RuntimeError("memory enhancement provider rate limited")
+            return {"summary": self.token}
+
+    store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
+    for name, token, priority in (
+        ("openrouter-primary", "TEST_ONLY_OPENROUTER_PRIMARY", 0),
+        ("openrouter-secondary", "TEST_ONLY_OPENROUTER_SECONDARY", 1),
+    ):
+        store.upsert_pooled(
+            MemoryEnhancementPooledCredential(
+                provider_id="openrouter",
+                id=name,
+                label=name,
+                auth_type=AUTH_TYPE_API_KEY,
+                priority=priority,
+                source="manual",
+                access_token=token,
+            )
+        )
+    store.set_active_pooled("openrouter-primary", provider_id="openrouter")
+    client = ResolvingMemoryEnhancementProviderClient(
+        oauth_resolver=OAuthMemoryEnhancementCredentialResolver(store),
+        api_key_client_factory=lambda token: FakeApiKeyClient(token),
+    )
+
+    result = client.invoke(_invocation("openrouter", "openai/gpt-4o-mini", "secret:openrouter-primary"))
+
+    assert result == {"summary": "TEST_ONLY_OPENROUTER_SECONDARY"}
+    assert captured == ["TEST_ONLY_OPENROUTER_PRIMARY", "TEST_ONLY_OPENROUTER_SECONDARY"]
+    exhausted = store.get_pooled("openrouter-primary", provider_id="openrouter")
+    assert exhausted.last_status == "exhausted"
+    assert exhausted.last_error_code == 429
+
+
 def test_resolving_provider_client_uses_anthropic_oauth_transport(monkeypatch, tmp_path: Path):
     captured: dict[str, object] = {}
 

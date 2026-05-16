@@ -181,7 +181,7 @@ def _active_pooled_credential_ref(env: Mapping[str, str], provider_id: str) -> s
         from .memory_enhancement_oauth import MemoryEnhancementOAuthStore
 
         store = MemoryEnhancementOAuthStore(_oauth_store_path_from_env(env))
-        credential = store.get_active_pooled(provider_id)
+        credential = store.select_pooled(provider_id)
     except Exception:
         return ""
     ref = credential.ref.raw_ref

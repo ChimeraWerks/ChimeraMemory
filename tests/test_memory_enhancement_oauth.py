@@ -20,6 +20,8 @@ from chimera_memory.memory_enhancement_oauth import (
     MemoryEnhancementOAuthStore,
     MemoryEnhancementPooledCredential,
     OAuthMemoryEnhancementCredentialResolver,
+    STATUS_EXHAUSTED,
+    STATUS_OK,
     _google_oauth_client_credentials,
     refresh_memory_enhancement_oauth_credential,
     resolve_oauth_store_path,
@@ -99,6 +101,54 @@ def test_pooled_api_key_credentials_round_trip_and_select_without_safe_token_ech
     assert payload["providers"] == {}
     assert "TEST_ONLY_OPENROUTER_KEY" not in safe_json
     assert "openrouter-primary" not in safe_json
+
+
+def test_pooled_selection_prefers_active_but_skips_exhausted_until_cooldown_clears(monkeypatch, tmp_path: Path):
+    current_time = 1_000.0
+    monkeypatch.setattr("chimera_memory.memory_enhancement_oauth.time.time", lambda: current_time)
+    store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
+    store.upsert_pooled(
+        MemoryEnhancementPooledCredential(
+            provider_id="openrouter",
+            id="openrouter-primary",
+            label="Primary",
+            auth_type=AUTH_TYPE_API_KEY,
+            priority=0,
+            source="manual",
+            access_token="TEST_ONLY_OPENROUTER_PRIMARY",
+        )
+    )
+    store.upsert_pooled(
+        MemoryEnhancementPooledCredential(
+            provider_id="openrouter",
+            id="openrouter-secondary",
+            label="Secondary",
+            auth_type=AUTH_TYPE_API_KEY,
+            priority=1,
+            source="manual",
+            access_token="TEST_ONLY_OPENROUTER_SECONDARY",
+        )
+    )
+    store.set_active_pooled("openrouter-primary", provider_id="openrouter")
+
+    fallback = store.mark_pooled_exhausted(
+        "openrouter-primary",
+        provider_id="openrouter",
+        status_code=429,
+        reason="rate_limit",
+        message="retry after 30 seconds",
+    )
+
+    assert fallback is not None
+    assert fallback.id == "openrouter-secondary"
+    assert store.select_pooled("openrouter", auth_type=AUTH_TYPE_API_KEY).id == "openrouter-secondary"
+    assert store.get_pooled("openrouter-primary", provider_id="openrouter").last_status == STATUS_EXHAUSTED
+
+    current_time = 1_031.0
+    selected = store.select_pooled("openrouter", auth_type=AUTH_TYPE_API_KEY)
+
+    assert selected.id == "openrouter-primary"
+    assert store.get_pooled("openrouter-primary", provider_id="openrouter").last_status == STATUS_OK
 
 
 def test_oauth_store_migrates_legacy_provider_entries_into_pool(tmp_path: Path):
