@@ -29,6 +29,8 @@ LMSTUDIO_DEFAULT_ENDPOINT = "http://127.0.0.1:1234/v1"
 
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(?P<body>.*?)\s*```\s*$", re.IGNORECASE | re.DOTALL)
+_LEADING_THINK_RE = re.compile(r"^\s*<think>.*?</think>\s*", re.IGNORECASE | re.DOTALL)
+_KOBOLDCPP_LOCAL_OUTPUT_TOKEN_FLOOR = 800
 
 
 class ProviderModelMemoryEnhancementClient:
@@ -194,10 +196,19 @@ class ProviderModelMemoryEnhancementClient:
                 {"role": "system", "content": _system_prompt()},
                 {"role": "user", "content": _user_prompt(invocation)},
             ],
-            "response_format": {"type": "json_object"},
-            "max_tokens": _budget(invocation).max_output_tokens,
+            "max_tokens": _openai_chat_max_tokens(invocation, provider),
             "temperature": 0,
         }
+        if _openai_chat_supports_response_format(provider):
+            payload["response_format"] = {"type": "json_object"}
+        if _is_koboldcpp_openai_compatible(provider):
+            payload.update(
+                {
+                    "top_p": 1.0,
+                    "top_k": 0,
+                    "min_p": 0.0,
+                }
+            )
         response = _post_json(
             endpoint,
             payload,
@@ -280,6 +291,7 @@ def _metadata_from_model_text(value: object) -> Mapping[str, Any]:
 
 
 def _extract_json_text(text: str) -> str:
+    text = _LEADING_THINK_RE.sub("", text).strip()
     match = _FENCE_RE.search(text)
     if match:
         return match.group("body").strip()
@@ -293,6 +305,25 @@ def _extract_json_text(text: str) -> str:
     except json.JSONDecodeError:
         return text
     return text[start : start + end].strip()
+
+
+def _openai_chat_supports_response_format(provider: Mapping[str, str]) -> bool:
+    return not _is_koboldcpp_openai_compatible(provider)
+
+
+def _openai_chat_max_tokens(invocation: Mapping[str, Any], provider: Mapping[str, str]) -> int:
+    configured = _budget(invocation).max_output_tokens
+    if _is_koboldcpp_openai_compatible(provider):
+        return max(configured, _KOBOLDCPP_LOCAL_OUTPUT_TOKEN_FLOOR)
+    return configured
+
+
+def _is_koboldcpp_openai_compatible(provider: Mapping[str, str]) -> bool:
+    if str(provider.get("provider_id") or "").strip() != "openai_compatible":
+        return False
+    model = str(provider.get("model") or "").strip().lower()
+    endpoint = str(provider.get("endpoint") or "").strip().lower()
+    return model.startswith("koboldcpp/") or "kobold" in endpoint
 
 
 def _post_json(

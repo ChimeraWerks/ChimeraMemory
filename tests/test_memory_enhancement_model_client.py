@@ -292,6 +292,67 @@ def test_lmstudio_provider_client_uses_local_openai_compatible_endpoint_without_
     assert metadata["tools"] == ["lmstudio"]
 
 
+def test_koboldcpp_openai_compatible_omits_json_mode_and_uses_local_sampling_floor() -> None:
+    captured = {}
+
+    def opener(request, *, timeout):
+        captured["request"] = request
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "\n\n"
+                            + json.dumps(
+                                {
+                                    "memory_type": "semantic",
+                                    "summary": "KoboldCpp local adapter returns JSON without OpenAI grammar mode.",
+                                    "tools": ["koboldcpp"],
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+
+    metadata = ProviderModelMemoryEnhancementClient(opener=opener).invoke(
+        _invocation(
+            "openai_compatible,dry_run",
+            CHIMERA_MEMORY_ENHANCEMENT_OPENAI_COMPATIBLE_ENDPOINT="http://127.0.0.1:5001/v1",
+            CHIMERA_MEMORY_ENHANCEMENT_OPENAI_COMPATIBLE_MODEL="koboldcpp/qwen3-local",
+            CHIMERA_MEMORY_ENHANCEMENT_MAX_OUTPUT_TOKENS="200",
+        )
+    )
+
+    request = captured["request"]
+    body = json.loads(request.data.decode("utf-8"))
+    assert request.full_url == "http://127.0.0.1:5001/v1/chat/completions"
+    assert "response_format" not in body
+    assert body["max_tokens"] == 800
+    assert body["temperature"] == 0
+    assert body["top_p"] == 1.0
+    assert body["top_k"] == 0
+    assert body["min_p"] == 0.0
+    assert metadata["tools"] == ["koboldcpp"]
+
+
+def test_metadata_from_model_text_ignores_leading_think_block() -> None:
+    metadata = _metadata_from_model_text(
+        "<think>this may mention {not json}</think>\n"
+        + json.dumps(
+            {
+                "memory_type": "semantic",
+                "summary": "JSON after a thinking block is parsed.",
+                "topics": ["local-model"],
+            }
+        )
+    )
+
+    assert metadata["summary"] == "JSON after a thinking block is parsed."
+    assert metadata["topics"] == ["local-model"]
+
+
 def test_custom_openai_compatible_provider_requires_endpoint_and_model() -> None:
     plan = resolve_enhancement_provider_plan(
         {
