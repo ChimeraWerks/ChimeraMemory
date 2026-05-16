@@ -1731,6 +1731,52 @@ def create_server():
         return "\n".join(lines)
 
     @server.tool()
+    def memory_enhancement_shadow_report(persona: str | None = None, limit: int = 20) -> str:
+        """Compare recent shadow enhancement results against authoritative frontmatter."""
+        _ensure_memory_indexed()
+        from .memory_enhancement_shadow import memory_enhancement_shadow_report as _report
+
+        report = _report(_get_memory_conn(), persona=persona, limit=limit)
+        totals = report.get("totals", {})
+        lines = [
+            "Shadow enhancement report",
+            (
+                f"jobs={totals.get('jobs', 0)} pending={totals.get('pending', 0)} "
+                f"running={totals.get('running', 0)} succeeded={totals.get('succeeded', 0)} "
+                f"failed={totals.get('failed', 0)} skipped={totals.get('skipped', 0)}"
+            ),
+            (
+                f"type_mismatches={totals.get('type_mismatches', 0)} "
+                f"sensitivity_escalations={totals.get('sensitivity_escalations', 0)}"
+            ),
+        ]
+        jobs = report.get("jobs", [])
+        if not jobs:
+            lines.append("No enhancement jobs found.")
+            return "\n".join(lines)
+        for job in jobs[: max(0, min(limit, 50))]:
+            comparison = job.get("comparison") or {}
+            if job.get("status") == "succeeded":
+                entities = comparison.get("entity_counts") or {}
+                lines.append(
+                    f"- {job.get('relative_path')} [{job.get('persona')}] "
+                    f"status=succeeded type={comparison.get('frontmatter_type') or '?'}"
+                    f"->{comparison.get('enhanced_type') or '?'} "
+                    f"type_match={comparison.get('type_match')} "
+                    f"sensitivity={comparison.get('frontmatter_sensitivity') or '?'}"
+                    f"->{comparison.get('enhanced_sensitivity') or '?'} "
+                    f"topics={comparison.get('topic_overlap_count', 0)}/"
+                    f"{comparison.get('enhanced_topic_count', 0)} "
+                    f"entities={sum(int(value or 0) for value in entities.values())}"
+                )
+            else:
+                lines.append(
+                    f"- {job.get('relative_path')} [{job.get('persona')}] "
+                    f"status={job.get('status')} error={job.get('error') or '-'}"
+                )
+        return "\n".join(lines)
+
+    @server.tool()
     def memory_gaps(persona: str | None = None) -> str:
         """Detect knowledge gaps using graph analysis. Finds disconnected clusters and isolated files."""
         _ensure_memory_indexed()

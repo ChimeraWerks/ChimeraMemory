@@ -195,7 +195,13 @@ class ResolvingMemoryEnhancementProviderClient:
                 )
                 return _invoke_anthropic_oauth(invocation, provider, refreshed, opener=self._opener)
         if provider_id == "google" and credential.transport == "google_cloudcode":
-            return _invoke_google_cloudcode(invocation, provider, credential, opener=self._opener)
+            return _invoke_google_cloudcode(
+                invocation,
+                provider,
+                credential,
+                store=self._credential_store(),
+                opener=self._opener,
+            )
         raise RuntimeError("memory enhancement provider oauth transport unavailable")
 
 
@@ -495,58 +501,95 @@ def _invoke_google_cloudcode(
     provider: Mapping[str, str],
     credential: MemoryEnhancementOAuthCredential,
     *,
+    store: MemoryEnhancementOAuthStore | None = None,
     opener: Callable[..., Any] | None,
 ) -> Mapping[str, Any]:
     model_client = _memory_model_client_module()
     budget = model_client._budget(invocation)
     model_candidates = google_cloudcode_model_candidates(provider["model"])
-    discovery_provider = {**dict(provider), "model": GOOGLE_CLOUDCODE_MEMORY_DEFAULT_MODEL}
-    project_id = _google_cloudcode_project_id(
-        credential,
-        provider=discovery_provider,
-        model_client=model_client,
-        opener=opener,
-        timeout_seconds=budget.timeout_seconds,
-    )
-    inner_request = {
-        "systemInstruction": {"parts": [{"text": model_client._system_prompt()}]},
-        "contents": [{"role": "user", "parts": [{"text": model_client._user_prompt(invocation)}]}],
-        "generationConfig": {
-            "temperature": 0,
-            "maxOutputTokens": budget.max_output_tokens,
-            "responseMimeType": "application/json",
-        },
-    }
     last_error: RuntimeError | None = None
-    for model in model_candidates:
-        model_provider = {**dict(provider), "model": model}
-        payload = {
-            "project": project_id,
-            "model": model,
-            "user_prompt_id": str(uuid.uuid4()),
-            "request": inner_request,
-        }
-        try:
-            response = _post_google_cloudcode_json(
-                _google_cloudcode_endpoint(model_provider, credential, "generateContent"),
-                payload,
-                {
-                    "Authorization": f"Bearer {credential.access_token}",
-                    "x-activity-request-id": str(uuid.uuid4()),
-                    **GOOGLE_CLOUDCODE_HEADERS,
-                },
-                opener=opener or model_client.urllib.request.urlopen,
-                timeout_seconds=budget.timeout_seconds,
-                model_client=model_client,
+    from .hermes_google_oauth import bind_credential
+
+    with bind_credential(credential, store=store):
+        for model in model_candidates:
+            client = _hermes_google_client_class()(
+                api_key="google-oauth",
+                base_url=credential.base_url or None,
+                project_id=credential.project_id,
             )
-            return _metadata_from_google_cloudcode_response(response, model_client)
-        except RuntimeError as exc:
-            if not _google_cloudcode_model_retryable(str(exc)):
-                raise
-            last_error = exc
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": model_client._system_prompt()},
+                        {"role": "user", "content": model_client._user_prompt(invocation)},
+                    ],
+                    stream=True,
+                    temperature=0,
+                    max_tokens=budget.max_output_tokens,
+                    timeout=budget.timeout_seconds,
+                )
+                text = _hermes_google_response_text(response)
+                return model_client._metadata_from_model_text(text)
+            except Exception as exc:
+                runtime_error = _runtime_error_from_hermes_google_error(exc)
+                if not _google_cloudcode_model_retryable(str(runtime_error)):
+                    raise runtime_error from exc
+                last_error = runtime_error
+            finally:
+                close = getattr(client, "close", None)
+                if callable(close):
+                    close()
     if last_error is not None:
         raise last_error
     raise RuntimeError("memory enhancement provider unavailable")
+
+
+def _hermes_google_client_class() -> type:
+    from .hermes_gemini_cloudcode_adapter import GeminiCloudCodeClient
+
+    return GeminiCloudCodeClient
+
+
+def _hermes_google_response_text(response: Any) -> str:
+    choices = getattr(response, "choices", None)
+    first = choices[0] if isinstance(choices, list) and choices else None
+    message = getattr(first, "message", None)
+    content = getattr(message, "content", None)
+    if isinstance(content, str) and content.strip():
+        return content
+    parts: list[str] = []
+    try:
+        iterator = iter(response)
+    except TypeError:
+        iterator = iter(())
+    for chunk in iterator:
+        chunk_choices = getattr(chunk, "choices", None)
+        chunk_first = chunk_choices[0] if isinstance(chunk_choices, list) and chunk_choices else None
+        delta = getattr(chunk_first, "delta", None)
+        delta_content = getattr(delta, "content", None)
+        if isinstance(delta_content, str):
+            parts.append(delta_content)
+    streamed = "".join(parts).strip()
+    if streamed:
+        return streamed
+    raise RuntimeError("memory enhancement provider returned invalid JSON")
+
+
+def _runtime_error_from_hermes_google_error(exc: BaseException) -> RuntimeError:
+    code = str(getattr(exc, "code", "") or "").strip()
+    details = getattr(exc, "details", None)
+    pieces = [str(exc)]
+    if code:
+        pieces.append(f"code={code}")
+    if isinstance(details, Mapping):
+        status = str(details.get("status") or "").strip()
+        reason = str(details.get("reason") or "").strip()
+        if status:
+            pieces.append(f"status={status}")
+        if reason:
+            pieces.append(f"reason={reason}")
+    return RuntimeError(" ".join(piece for piece in pieces if piece))
 
 
 def _google_cloudcode_project_id(
@@ -715,6 +758,10 @@ def _google_cloudcode_model_retryable(message: str) -> bool:
         return False
     return (
         "provider unavailable" in text
+        or "model_unavailable" in text
+        or "not available" in text
+        or "code_assist_http_404" in text
+        or "code_assist_capacity_exhausted" in text
         or "provider rejected content" in text
         or "returned invalid json" in text
     )

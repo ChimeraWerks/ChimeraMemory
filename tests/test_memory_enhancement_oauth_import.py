@@ -164,6 +164,35 @@ def test_import_google_hermes_credentials_parses_packed_project(tmp_path: Path):
     assert store.get("google-memory", provider_id="google").refresh_token == "TEST_ONLY_GOOGLE_REFRESH"
 
 
+def test_import_google_gemini_cli_credentials(monkeypatch, tmp_path: Path):
+    gemini_path = tmp_path / ".gemini" / "oauth_creds.json"
+    gemini_path.parent.mkdir(parents=True)
+    gemini_path.write_text(
+        json.dumps(
+            {
+                "access_token": "TEST_ONLY_GEMINI_CLI_ACCESS",
+                "refresh_token": "TEST_ONLY_GEMINI_CLI_REFRESH",
+                "expiry_date": 1893456000000,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CHIMERA_MEMORY_GEMINI_CLI_OAUTH_PATH", str(gemini_path))
+    store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
+
+    credential = import_memory_enhancement_oauth_credential(
+        provider_id="google",
+        source="gemini_cli",
+        store=store,
+    )
+
+    assert credential.provider_id == "google"
+    assert credential.source == "gemini_cli"
+    assert credential.transport == "google_cloudcode"
+    assert credential.expires_at_ms == 1893456000000
+    assert store.get("google-memory", provider_id="google").access_token == "TEST_ONLY_GEMINI_CLI_ACCESS"
+
+
 def test_import_google_hermes_auth_pool_credentials(tmp_path: Path):
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()

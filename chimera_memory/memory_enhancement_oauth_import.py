@@ -111,9 +111,14 @@ def _import_google(
     name: str,
     hermes_home: str | Path | None,
 ) -> MemoryEnhancementOAuthCredential:
-    attempts = ("hermes_google", "hermes_auth_pool") if source == "auto" else (source,)
+    attempts = ("gemini_cli", "hermes_google", "hermes_auth_pool") if source == "auto" else (source,)
     for attempt in attempts:
-        if attempt in {"hermes_google", "google_pkce"}:
+        if attempt == "gemini_cli":
+            raw = _read_json(_gemini_cli_oauth_path(None))
+            credential = _google_from_gemini_cli_payload(name, raw)
+            if credential is not None:
+                return credential
+        elif attempt in {"hermes_google", "google_pkce"}:
             raw = _read_json(_hermes_home(hermes_home) / "auth" / "google_oauth.json")
             credential = _google_from_payload(name, raw)
             if credential is not None:
@@ -215,6 +220,27 @@ def _google_from_payload(name: str, payload: Mapping[str, object] | None) -> Mem
     )
 
 
+def _google_from_gemini_cli_payload(
+    name: str,
+    payload: Mapping[str, object] | None,
+) -> MemoryEnhancementOAuthCredential | None:
+    if not payload:
+        return None
+    access_token = _first_text(payload, ("access_token", "accessToken", "access"))
+    refresh_token = _first_text(payload, ("refresh_token", "refreshToken", "refresh"))
+    if not access_token or not refresh_token:
+        return None
+    return MemoryEnhancementOAuthCredential(
+        name=name,
+        provider_id="google",
+        source="gemini_cli",
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_at_ms=_optional_int(payload.get("expiry_date") or payload.get("expires_at_ms")),
+        transport="google_cloudcode",
+    )
+
+
 def _google_from_hermes_auth_pool(
     name: str,
     payload: Mapping[str, object] | None,
@@ -300,6 +326,17 @@ def _codex_auth_path(path: str | Path | None) -> Path:
     codex_home = os.environ.get("CODEX_HOME", "").strip()
     root = Path(codex_home).expanduser() if codex_home else Path.home() / ".codex"
     return root / "auth.json"
+
+
+def _gemini_cli_oauth_path(path: str | Path | None) -> Path:
+    if path:
+        return Path(path).expanduser().resolve()
+    configured = os.environ.get("CHIMERA_MEMORY_GEMINI_CLI_OAUTH_PATH") or os.environ.get("GEMINI_CLI_OAUTH_PATH")
+    if configured:
+        return Path(configured).expanduser().resolve()
+    gemini_home = os.environ.get("GEMINI_HOME", "").strip()
+    root = Path(gemini_home).expanduser() if gemini_home else Path.home() / ".gemini"
+    return root / "oauth_creds.json"
 
 
 def _first_text(payload: Mapping[str, object], keys: tuple[str, ...]) -> str:

@@ -343,16 +343,27 @@ def test_anthropic_oauth_retries_once_after_auth_failure(monkeypatch, tmp_path: 
 def test_resolving_provider_client_uses_google_cloudcode_transport(monkeypatch, tmp_path: Path):
     captured: dict[str, object] = {}
 
-    def fake_post_json(endpoint, payload, headers, *, opener, timeout_seconds):
-        captured["endpoint"] = endpoint
-        captured["payload"] = payload
-        captured["headers"] = headers
-        captured["timeout_seconds"] = timeout_seconds
-        return {"candidates": [{"content": {"parts": [{"text": json.dumps({"summary": "ok"})}]}}]}
+    class FakeHermesGoogleClient:
+        def __init__(self, *, api_key=None, base_url=None, project_id="", **_kwargs):
+            captured["api_key"] = api_key
+            captured["base_url"] = base_url
+            captured["project_id"] = project_id
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs):
+            from chimera_memory import hermes_google_oauth
+
+            captured["create"] = kwargs
+            captured["access_token"] = hermes_google_oauth.get_valid_access_token()
+            message = SimpleNamespace(content=json.dumps({"summary": "ok"}))
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+        def close(self):
+            captured["closed"] = True
 
     monkeypatch.setattr(
-        "chimera_memory.memory_enhancement_provider_sidecar._memory_model_client_module",
-        lambda: _fake_model_client(fake_post_json),
+        "chimera_memory.memory_enhancement_provider_sidecar._hermes_google_client_class",
+        lambda: FakeHermesGoogleClient,
     )
     store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
     store.upsert(
@@ -373,31 +384,41 @@ def test_resolving_provider_client_uses_google_cloudcode_transport(monkeypatch, 
 
     result = client.invoke(_invocation("google", "gemini-3-flash-preview", "oauth:google-memory"))
 
-    headers = captured["headers"]
-    payload = captured["payload"]
+    create = captured["create"]
     assert result["summary"] == "ok"
-    assert isinstance(headers, dict)
-    assert headers["Authorization"] == "Bearer TEST_ONLY_GOOGLE_ACCESS"
-    assert isinstance(payload, dict)
-    assert payload["project"] == "project-test"
-    assert payload["model"] == "gemini-3-flash-preview"
-    assert "request" in payload
+    assert captured["api_key"] == "google-oauth"
+    assert captured["project_id"] == "project-test"
+    assert captured["access_token"] == "TEST_ONLY_GOOGLE_ACCESS"
+    assert captured["closed"] is True
+    assert isinstance(create, dict)
+    assert create["model"] == "gemini-3-flash-preview"
+    assert create["stream"] is True
+    assert create["temperature"] == 0
+    assert create["max_tokens"] == 128
+    assert create["messages"][0]["role"] == "system"
+    assert create["messages"][1]["role"] == "user"
 
 
 def test_google_cloudcode_falls_back_to_hermes_oauth_model_list(monkeypatch, tmp_path: Path):
     captured_models: list[str] = []
 
-    def fake_post_json(endpoint, payload, headers, *, opener, timeout_seconds):
-        if endpoint.endswith(":generateContent"):
-            captured_models.append(payload["model"])
-            if payload["model"] == "gemini-2.5-flash":
+    class FakeHermesGoogleClient:
+        def __init__(self, **_kwargs):
+            self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+        def create(self, **kwargs):
+            captured_models.append(kwargs["model"])
+            if kwargs["model"] == "gemini-2.5-flash":
                 raise RuntimeError("memory enhancement provider unavailable")
-            return {"candidates": [{"content": {"parts": [{"text": json.dumps({"summary": "ok"})}]}}]}
-        return {"cloudaicompanionProject": "project-test"}
+            message = SimpleNamespace(content=json.dumps({"summary": "ok"}))
+            return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+        def close(self):
+            pass
 
     monkeypatch.setattr(
-        "chimera_memory.memory_enhancement_provider_sidecar._memory_model_client_module",
-        lambda: _fake_model_client(fake_post_json),
+        "chimera_memory.memory_enhancement_provider_sidecar._hermes_google_client_class",
+        lambda: FakeHermesGoogleClient,
     )
     store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
     store.upsert(
@@ -422,106 +443,34 @@ def test_google_cloudcode_falls_back_to_hermes_oauth_model_list(monkeypatch, tmp
     assert captured_models == ["gemini-2.5-flash", "gemini-3-flash-preview"]
 
 
-def test_google_cloudcode_discovers_project_when_hermes_pool_credential_has_none(monkeypatch, tmp_path: Path):
-    captured: list[dict[str, object]] = []
+def test_google_hermes_oauth_shim_persists_project_discovery(tmp_path: Path):
+    from chimera_memory import hermes_google_oauth
 
-    def fake_post_json(endpoint, payload, headers, *, opener, timeout_seconds):
-        captured.append(
-            {
-                "endpoint": endpoint,
-                "payload": payload,
-                "headers": headers,
-                "timeout_seconds": timeout_seconds,
-            }
-        )
-        if endpoint.endswith(":loadCodeAssist"):
-            return {"cloudaicompanionProject": "project-discovered"}
-        return {"response": {"candidates": [{"content": {"parts": [{"text": json.dumps({"summary": "ok"})}]}}]}}
-
-    monkeypatch.setattr(
-        "chimera_memory.memory_enhancement_provider_sidecar._memory_model_client_module",
-        lambda: _fake_model_client(fake_post_json),
-    )
     store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
+    credential = MemoryEnhancementOAuthCredential(
+        name="google-memory",
+        provider_id="google",
+        source="hermes_auth_pool",
+        access_token="TEST_ONLY_GOOGLE_ACCESS",
+        transport="google_cloudcode",
+    )
     store.upsert(
-        MemoryEnhancementOAuthCredential(
-            name="google-memory",
-            provider_id="google",
-            source="hermes_auth_pool",
-            access_token="TEST_ONLY_GOOGLE_ACCESS",
-            transport="google_cloudcode",
-            base_url="https://cloudcode-pa.googleapis.com",
+        credential
+    )
+
+    with hermes_google_oauth.bind_credential(credential, store=store):
+        hermes_google_oauth.update_project_ids(
+            project_id="project-discovered",
+            managed_project_id="managed-discovered",
         )
-    )
-    client = ResolvingMemoryEnhancementProviderClient(
-        oauth_resolver=OAuthMemoryEnhancementCredentialResolver(store),
-        opener=lambda *_args, **_kwargs: None,
-    )
+        loaded = hermes_google_oauth.load_credentials()
 
-    result = client.invoke(_invocation("google", "gemini-3-flash-preview", "oauth:google-memory"))
-
-    assert result["summary"] == "ok"
-    assert captured[0]["endpoint"] == "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"
-    assert captured[0]["payload"] == {
-        "metadata": {
-            "duetProject": "",
-            "ideType": "IDE_UNSPECIFIED",
-            "platform": "PLATFORM_UNSPECIFIED",
-            "pluginType": "GEMINI",
-        }
-    }
-    assert captured[0]["headers"]["User-Agent"] == "google-api-nodejs-client/9.15.1 (gzip) model/gemini-3-flash-preview"
-    assert captured[0]["headers"]["X-Goog-Api-Client"] == "gl-node/24.0.0"
-    assert captured[1]["endpoint"] == "https://cloudcode-pa.googleapis.com/v1internal:generateContent"
-    assert captured[1]["headers"]["User-Agent"] == "hermes-agent (gemini-cli-compat)"
-    assert captured[1]["headers"]["X-Goog-Api-Client"] == "gl-python/hermes"
-    assert captured[1]["payload"]["project"] == "project-discovered"
-
-
-def test_google_cloudcode_onboards_free_tier_when_project_missing(monkeypatch, tmp_path: Path):
-    captured: list[dict[str, object]] = []
-
-    def fake_post_json(endpoint, payload, headers, *, opener, timeout_seconds):
-        captured.append({"endpoint": endpoint, "payload": payload, "headers": headers})
-        if endpoint.endswith(":loadCodeAssist"):
-            return {"allowedTiers": [{"id": "free-tier", "isDefault": True}]}
-        if endpoint.endswith(":onboardUser"):
-            return {"done": True, "response": {"cloudaicompanionProject": "project-onboarded"}}
-        return {"response": {"candidates": [{"content": {"parts": [{"text": json.dumps({"summary": "ok"})}]}}]}}
-
-    monkeypatch.setattr(
-        "chimera_memory.memory_enhancement_provider_sidecar._memory_model_client_module",
-        lambda: _fake_model_client(fake_post_json),
-    )
-    store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
-    store.upsert(
-        MemoryEnhancementOAuthCredential(
-            name="google-memory",
-            provider_id="google",
-            source="browser:google_pkce",
-            access_token="TEST_ONLY_GOOGLE_ACCESS",
-            refresh_token="TEST_ONLY_GOOGLE_REFRESH",
-            transport="google_cloudcode",
-        )
-    )
-    client = ResolvingMemoryEnhancementProviderClient(
-        oauth_resolver=OAuthMemoryEnhancementCredentialResolver(store),
-        opener=lambda *_args, **_kwargs: None,
-    )
-
-    result = client.invoke(_invocation("google", "gemini-3-flash-preview", "oauth:google-memory"))
-
-    assert result["summary"] == "ok"
-    assert captured[1]["endpoint"] == "https://cloudcode-pa.googleapis.com/v1internal:onboardUser"
-    assert captured[1]["payload"] == {
-        "tierId": "free-tier",
-        "metadata": {
-            "ideType": "IDE_UNSPECIFIED",
-            "platform": "PLATFORM_UNSPECIFIED",
-            "pluginType": "GEMINI",
-        },
-    }
-    assert captured[2]["payload"]["project"] == "project-onboarded"
+    stored = store.get("google-memory", provider_id="google")
+    assert loaded is not None
+    assert loaded.project_id == "project-discovered"
+    assert loaded.managed_project_id == "managed-discovered"
+    assert stored.project_id == "project-discovered"
+    assert stored.extra["managed_project_id"] == "managed-discovered"
 
 
 def test_google_cloudcode_endpoint_ignores_public_gemini_base_url():

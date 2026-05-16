@@ -22,6 +22,7 @@ from .memory_enhancement_queue import (
     memory_enhancement_complete,
     memory_enhancement_enqueue,
 )
+from .memory_enhancement_shadow import memory_enhancement_shadow_enqueue
 from .memory_entities import (
     ENTITY_TYPES,
     MENTION_ROLES,
@@ -318,10 +319,12 @@ def full_reindex(conn: sqlite3.Connection, personas_dir: Path, embed: bool = Tru
     files = discover_files(personas_dir)
     updated = 0
     updated_ids = []
+    shadow_candidates: list[tuple[str, str]] = []
 
     for persona, rel, full_path in files:
         if index_file(conn, persona, rel, full_path, maintenance=True):
             updated += 1
+            shadow_candidates.append((persona, rel))
             row = conn.execute("SELECT id FROM memory_files WHERE path = ?",
                                (str(full_path).replace("\\", "/"),)).fetchone()
             if row:
@@ -349,6 +352,14 @@ def full_reindex(conn: sqlite3.Connection, personas_dir: Path, embed: bool = Tru
         missing_ids = [r[0] for r in missing if r[0] not in updated_ids]
         if missing_ids:
             embed_memory_files(conn, missing_ids)
+
+    for persona, rel in shadow_candidates:
+        memory_enhancement_shadow_enqueue(
+            conn,
+            file_path=rel,
+            persona=persona,
+            reason="full_reindex",
+        )
 
     return updated
 
@@ -797,6 +808,12 @@ def memory_auto_capture_session_close(
         commit=False,
     )
     conn.commit()
+    shadow_result = memory_enhancement_shadow_enqueue(
+        conn,
+        file_path=relative_path,
+        persona=persona,
+        reason="auto_capture_write",
+    )
     return {
         "ok": True,
         "written": True,
@@ -807,6 +824,7 @@ def memory_auto_capture_session_close(
         "capture_id": plan["capture_id"],
         "action_items": plan.get("action_items", []),
         "guard_findings": plan.get("guard_findings", []),
+        "shadow_enhancement": shadow_result,
     }
 
 
@@ -1153,6 +1171,13 @@ def start_memory_watcher(db, personas_dir: Path):
                         except Exception:
                             log.exception("Embedding failed for %s", path)
                 conn.commit()
+                if changed:
+                    memory_enhancement_shadow_enqueue(
+                        conn,
+                        file_path=rel,
+                        persona=persona,
+                        reason="file_watcher",
+                    )
         except Exception:
             log.exception("Error reindexing memory file %s", path)
 

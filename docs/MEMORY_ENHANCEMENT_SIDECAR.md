@@ -1,7 +1,8 @@
 # Memory Enhancement Sidecar
 
-Status: Phase 1 design spec plus Phase 5d provider-policy groundwork. The real
-OAuth/model adapter is not implemented yet.
+Status: Sidecar, queue, provider policy, OAuth transport plumbing, and
+shadow-mode pilot wiring exist. Enhancement remains optional and does not
+rewrite authoritative memory files automatically.
 
 This document defines the planned sidecar that can enrich ChimeraMemory captures
 with structured metadata while preserving CM's local-first core. It lifts the
@@ -202,7 +203,7 @@ credential material.
 ## Provider Runner Boundary
 
 `chimera_memory/memory_enhancement_runner.py` defines the batch runner that a
-host application can use before real provider adapters exist.
+host application can use with an injected provider client.
 
 The runner:
 
@@ -220,6 +221,38 @@ own secret store and performs the provider-specific call.
 Failure storage is intentionally narrow. Raw provider stderr, exception text,
 request content, and credential values do not get written to the queue. The job
 stores a category such as `auth_error` or `parse_error` plus provider/model ids.
+
+## Shadow Mode
+
+`chimera_memory/memory_enhancement_shadow.py` wires real memory-file operations
+to the enhancement queue without cutting over authority. When enabled, changed
+memory files are indexed normally, then queued for enhancement. Current
+frontmatter, local search, embeddings, and recall remain authoritative.
+
+Shadow mode is opt-in and allowlisted:
+
+```text
+CHIMERA_MEMORY_ENHANCEMENT_SHADOW_MODE=true
+CHIMERA_MEMORY_ENHANCEMENT_SHADOW_PERSONAS=sarah
+```
+
+Optional request hints:
+
+```text
+CHIMERA_MEMORY_ENHANCEMENT_SHADOW_PROVIDER=openai
+CHIMERA_MEMORY_ENHANCEMENT_SHADOW_MODEL=gpt-5.4
+```
+
+Auto-enqueue hooks currently exist for:
+
+- changed files found by `full_reindex`
+- live file-watcher upserts
+- `memory_auto_capture_session_close(write=true)`
+
+The queue result is comparable through `memory_enhancement_shadow_report`, which
+shows safe metadata deltas only: status, type match, sensitivity escalation,
+topic overlap counts, entity counts, and bounded failure categories. It does
+not print raw memory body text or credential references.
 
 ### Response
 
