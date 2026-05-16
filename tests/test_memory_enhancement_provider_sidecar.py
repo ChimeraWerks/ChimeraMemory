@@ -125,16 +125,32 @@ def test_resolving_provider_client_uses_anthropic_oauth_transport(monkeypatch, t
         lambda: "2.1.74",
     )
 
-    def fake_post_json(endpoint, payload, headers, *, opener, timeout_seconds):
+    def fake_post_anthropic_oauth_json(
+        endpoint,
+        payload,
+        headers,
+        *,
+        opener,
+        timeout_seconds,
+        provider_id,
+        model,
+        model_client,
+    ):
         captured["endpoint"] = endpoint
         captured["payload"] = payload
         captured["headers"] = headers
         captured["timeout_seconds"] = timeout_seconds
+        captured["provider_id"] = provider_id
+        captured["model"] = model
         return {"content": [{"text": json.dumps({"summary": "ok"})}]}
 
     monkeypatch.setattr(
         "chimera_memory.memory_enhancement_provider_sidecar._memory_model_client_module",
-        lambda: _fake_model_client(fake_post_json),
+        lambda: _fake_model_client(lambda *_args, **_kwargs: {}),
+    )
+    monkeypatch.setattr(
+        "chimera_memory.memory_enhancement_provider_sidecar._post_anthropic_oauth_json",
+        fake_post_anthropic_oauth_json,
     )
     store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
     store.upsert(
@@ -167,6 +183,12 @@ def test_resolving_provider_client_uses_anthropic_oauth_transport(monkeypatch, t
     )
     assert headers["user-agent"] == "claude-cli/2.1.74 (external, cli)"
     assert captured["payload"]["model"] == "claude-haiku-4-5"
+    assert captured["payload"]["system"][0] == {
+        "type": "text",
+        "text": "You are Claude Code, Anthropic's official CLI for Claude.",
+    }
+    assert captured["payload"]["system"][1] == {"type": "text", "text": "system"}
+    assert "temperature" not in captured["payload"]
 
 
 def test_resolving_provider_client_uses_openai_codex_oauth_transport(monkeypatch, tmp_path: Path):
@@ -243,7 +265,17 @@ def test_openai_codex_stream_text_reads_completed_response():
 def test_resolving_provider_client_refreshes_expiring_oauth_before_model_call(monkeypatch, tmp_path: Path):
     captured: dict[str, object] = {}
 
-    def fake_post_json(endpoint, payload, headers, *, opener, timeout_seconds):
+    def fake_post_anthropic_oauth_json(
+        endpoint,
+        payload,
+        headers,
+        *,
+        opener,
+        timeout_seconds,
+        provider_id,
+        model,
+        model_client,
+    ):
         captured["endpoint"] = endpoint
         captured["payload"] = payload
         captured["headers"] = headers
@@ -252,7 +284,11 @@ def test_resolving_provider_client_refreshes_expiring_oauth_before_model_call(mo
 
     monkeypatch.setattr(
         "chimera_memory.memory_enhancement_provider_sidecar._memory_model_client_module",
-        lambda: _fake_model_client(fake_post_json),
+        lambda: _fake_model_client(lambda *_args, **_kwargs: {}),
+    )
+    monkeypatch.setattr(
+        "chimera_memory.memory_enhancement_provider_sidecar._post_anthropic_oauth_json",
+        fake_post_anthropic_oauth_json,
     )
     store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
     store.upsert(
@@ -297,7 +333,17 @@ def test_resolving_provider_client_refreshes_expiring_oauth_before_model_call(mo
 def test_anthropic_oauth_retries_once_after_auth_failure(monkeypatch, tmp_path: Path):
     captured_headers: list[dict[str, str]] = []
 
-    def fake_post_json(_endpoint, _payload, headers, *, opener, timeout_seconds):
+    def fake_post_anthropic_oauth_json(
+        _endpoint,
+        _payload,
+        headers,
+        *,
+        opener,
+        timeout_seconds,
+        provider_id,
+        model,
+        model_client,
+    ):
         captured_headers.append(headers)
         if len(captured_headers) == 1:
             raise RuntimeError("memory enhancement provider auth failed")
@@ -305,7 +351,11 @@ def test_anthropic_oauth_retries_once_after_auth_failure(monkeypatch, tmp_path: 
 
     monkeypatch.setattr(
         "chimera_memory.memory_enhancement_provider_sidecar._memory_model_client_module",
-        lambda: _fake_model_client(fake_post_json),
+        lambda: _fake_model_client(lambda *_args, **_kwargs: {}),
+    )
+    monkeypatch.setattr(
+        "chimera_memory.memory_enhancement_provider_sidecar._post_anthropic_oauth_json",
+        fake_post_anthropic_oauth_json,
     )
     store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
     store.upsert(

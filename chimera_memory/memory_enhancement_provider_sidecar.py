@@ -27,6 +27,7 @@ from .memory_enhancement_oauth import (
     _get_claude_code_version,
 )
 from .memory_enhancement_google import GOOGLE_CLOUDCODE_MEMORY_DEFAULT_MODEL, google_cloudcode_model_candidates
+from .memory_enhancement_provider import classify_enhancement_failure
 
 
 OPENAI_CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
@@ -46,6 +47,7 @@ ANTHROPIC_OAUTH_ONLY_BETAS = (
     "claude-code-20250219",
     "oauth-2025-04-20",
 )
+ANTHROPIC_CLAUDE_CODE_SYSTEM_PREFIX = "You are Claude Code, Anthropic's official CLI for Claude."
 GOOGLE_CLOUDCODE_HEADERS = {
     "User-Agent": "hermes-agent (gemini-cli-compat)",
     "X-Goog-Api-Client": "gl-python/hermes",
@@ -258,18 +260,14 @@ def _credential_ref(provider: Mapping[str, str]) -> str:
 
 def _pool_exhaustion_context(exc: RuntimeError) -> dict[str, Any] | None:
     message = str(exc)
-    text = message.lower()
     status_code: int | None = None
-    reason = ""
-    if "rate limited" in text or "resource_exhausted" in text or "quota" in text or "exhausted" in text:
+    reason = classify_enhancement_failure(exc)
+    if reason == "rate_limit":
         status_code = 429
-        reason = "rate_limit"
-    elif "auth failed" in text or "credential invalid" in text or "unauthorized" in text or "forbidden" in text:
+    elif reason == "auth_error":
         status_code = 401
-        reason = "auth_failed"
-    elif "billing" in text or "payment" in text:
+    elif reason in {"billing", "quota_exceeded"}:
         status_code = 402
-        reason = "billing"
     if status_code is None:
         return None
     return {
@@ -477,14 +475,14 @@ def _invoke_anthropic_oauth(
 ) -> Mapping[str, Any]:
     model_client = _memory_model_client_module()
     budget = model_client._budget(invocation)
+    system_prompt = _anthropic_oauth_system_prompt(model_client._system_prompt())
     payload = {
         "model": provider["model"],
-        "system": model_client._system_prompt(),
+        "system": system_prompt,
         "messages": [{"role": "user", "content": model_client._user_prompt(invocation)}],
         "max_tokens": budget.max_output_tokens,
-        "temperature": 0,
     }
-    response = model_client._post_json(
+    response = _post_anthropic_oauth_json(
         provider.get("endpoint") or ANTHROPIC_OAUTH_ENDPOINT,
         payload,
         {
@@ -493,10 +491,92 @@ def _invoke_anthropic_oauth(
         },
         opener=opener or model_client.urllib.request.urlopen,
         timeout_seconds=budget.timeout_seconds,
+        provider_id=str(provider.get("provider_id") or "anthropic"),
+        model=str(provider.get("model") or ""),
+        model_client=model_client,
     )
     content = response.get("content") if isinstance(response.get("content"), list) else []
     first = content[0] if content and isinstance(content[0], Mapping) else {}
     return model_client._metadata_from_model_text(first.get("text"))
+
+
+def _anthropic_oauth_system_prompt(system_prompt: str) -> list[dict[str, str]]:
+    blocks = [{"type": "text", "text": ANTHROPIC_CLAUDE_CODE_SYSTEM_PREFIX}]
+    sanitized = _sanitize_anthropic_oauth_system_prompt(system_prompt)
+    if sanitized:
+        blocks.append({"type": "text", "text": sanitized})
+    return blocks
+
+
+def _sanitize_anthropic_oauth_system_prompt(text: str) -> str:
+    sanitized = str(text or "")
+    sanitized = sanitized.replace("Hermes Agent", "Claude Code")
+    sanitized = sanitized.replace("Hermes agent", "Claude Code")
+    sanitized = sanitized.replace("hermes-agent", "claude-code")
+    sanitized = sanitized.replace("Nous Research", "Anthropic")
+    return sanitized
+
+
+def _post_anthropic_oauth_json(
+    endpoint: str,
+    payload: Mapping[str, Any],
+    headers: Mapping[str, str],
+    *,
+    opener: Callable[..., Any],
+    timeout_seconds: int,
+    provider_id: str,
+    model: str,
+    model_client: Any,
+) -> Mapping[str, Any]:
+    safe_endpoint = model_client._validate_endpoint(endpoint)
+    request = model_client.urllib.request.Request(
+        safe_endpoint,
+        data=json.dumps(dict(payload), separators=(",", ":"), sort_keys=True).encode("utf-8"),
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            **dict(headers),
+        },
+        method="POST",
+    )
+    try:
+        with opener(request, timeout=timeout_seconds) as response:
+            raw_body = response.read()
+    except model_client.urllib.error.HTTPError as exc:
+        body = _safe_json_body_from_http_error(exc)
+        category = classify_enhancement_failure(
+            exc,
+            provider=provider_id,
+            model=model,
+            status_code=exc.code,
+            body=body,
+        )
+        raise RuntimeError(f"memory enhancement provider {category}") from exc
+    except model_client.urllib.error.URLError as exc:
+        raise RuntimeError("memory enhancement provider unavailable") from exc
+    except TimeoutError as exc:
+        raise RuntimeError("memory enhancement provider timeout") from exc
+    try:
+        decoded = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("memory enhancement provider returned invalid JSON") from exc
+    if not isinstance(decoded, dict):
+        raise RuntimeError("memory enhancement provider returned invalid JSON")
+    return decoded
+
+
+def _safe_json_body_from_http_error(exc: Any) -> Mapping[str, Any]:
+    try:
+        raw_body = exc.read()
+    except Exception:
+        return {}
+    if not raw_body:
+        return {}
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, Mapping) else {}
 
 
 def _invoke_google_cloudcode(

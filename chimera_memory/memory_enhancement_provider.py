@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .hermes_error_classifier import FailoverReason, classify_api_error
 from .memory_enhancement import ENHANCEMENT_SCHEMA_VERSION
 from .memory_enhancement_google import GOOGLE_CLOUDCODE_MEMORY_DEFAULT_MODEL
 
@@ -44,10 +45,21 @@ PROVIDER_DEFAULT_MODELS = {
 FAILURE_CATEGORIES = {
     "auth_error",
     "content_filter",
+    "context_overflow",
+    "billing",
+    "format_error",
+    "image_too_large",
+    "long_context_tier",
     "model_unavailable",
+    "oauth_long_context_beta_forbidden",
+    "overloaded",
+    "payload_too_large",
     "parse_error",
+    "provider_policy_blocked",
     "quota_exceeded",
     "rate_limit",
+    "server_error",
+    "thinking_signature",
     "timeout",
     "unknown_error",
 }
@@ -61,7 +73,7 @@ class EnhancementBudget:
 
     max_input_tokens: int = 500
     max_input_chars: int = 2_000
-    max_output_tokens: int = 200
+    max_output_tokens: int = 1200
     max_jobs_per_run: int = 10
     per_minute_call_cap: int = 30
     daily_soft_call_cap: int = 5_000
@@ -220,7 +232,7 @@ def load_enhancement_budget(env: Mapping[str, str]) -> EnhancementBudget:
         max_output_tokens=_env_int(
             env,
             "CHIMERA_MEMORY_ENHANCEMENT_MAX_OUTPUT_TOKENS",
-            default=200,
+            default=1200,
             minimum=64,
             maximum=8_000,
         ),
@@ -461,16 +473,65 @@ def safe_provider_receipt(plan: EnhancementProviderPlan) -> dict[str, Any]:
     }
 
 
-def classify_enhancement_failure(message: object) -> str:
+_HERMES_REASON_TO_FAILURE_CATEGORY = {
+    FailoverReason.auth: "auth_error",
+    FailoverReason.auth_permanent: "auth_error",
+    FailoverReason.billing: "billing",
+    FailoverReason.context_overflow: "context_overflow",
+    FailoverReason.format_error: "format_error",
+    FailoverReason.image_too_large: "image_too_large",
+    FailoverReason.long_context_tier: "long_context_tier",
+    FailoverReason.llama_cpp_grammar_pattern: "format_error",
+    FailoverReason.model_not_found: "model_unavailable",
+    FailoverReason.oauth_long_context_beta_forbidden: "oauth_long_context_beta_forbidden",
+    FailoverReason.overloaded: "overloaded",
+    FailoverReason.payload_too_large: "payload_too_large",
+    FailoverReason.provider_policy_blocked: "provider_policy_blocked",
+    FailoverReason.rate_limit: "rate_limit",
+    FailoverReason.server_error: "server_error",
+    FailoverReason.thinking_signature: "thinking_signature",
+    FailoverReason.timeout: "timeout",
+    FailoverReason.unknown: "unknown_error",
+}
+
+
+def classify_enhancement_failure(
+    message: object,
+    *,
+    provider: str = "",
+    model: str = "",
+    status_code: int | None = None,
+    body: Mapping[str, Any] | None = None,
+) -> str:
     """Classify provider failure text into bounded, non-secret categories."""
+    if isinstance(message, Exception):
+        error = message
+    else:
+        error = RuntimeError(str(message or ""))
+    if status_code is not None:
+        setattr(error, "status_code", int(status_code))
+    if body is not None:
+        setattr(error, "body", dict(body))
+
+    classified = classify_api_error(error, provider=provider, model=model)
+    category = _HERMES_REASON_TO_FAILURE_CATEGORY.get(classified.reason, "unknown_error")
+    if category != "unknown_error":
+        return category
+
     text = str(message or "").lower()
     if not text:
         return "unknown_error"
     if "credential" in text or "unauthorized" in text or "forbidden" in text or "auth" in text:
         return "auth_error"
-    if "deprecated" in text or "unavailable" in text or "not found" in text or "503" in text:
+    if "deprecated" in text or "unavailable" in text or "not available" in text or "not found" in text or "503" in text:
         return "model_unavailable"
-    if "rate" in text or "429" in text:
+    if (
+        "rate limit" in text
+        or "rate_limit" in text
+        or "too many requests" in text
+        or "throttled" in text
+        or "429" in text
+    ):
         return "rate_limit"
     if "quota" in text or "cap" in text or "budget" in text:
         return "quota_exceeded"

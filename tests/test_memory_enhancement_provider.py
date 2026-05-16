@@ -36,7 +36,7 @@ def test_resolve_provider_plan_selects_first_configured_credential_ref() -> None
     assert plan.selected.model == "gpt-4o-mini"
     assert plan.selected.uses_user_oauth is True
     assert plan.budget.max_input_tokens == 500
-    assert plan.budget.max_output_tokens == 200
+    assert plan.budget.max_output_tokens == 1200
 
 
 def test_resolve_provider_plan_rejects_raw_looking_credential_ref() -> None:
@@ -213,12 +213,42 @@ def test_classify_enhancement_failure_uses_bounded_categories() -> None:
         "unauthorized credential": "auth_error",
         "model deprecated or unavailable": "model_unavailable",
         "provider returned 429 rate limit": "rate_limit",
-        "monthly quota exceeded": "quota_exceeded",
+        "monthly quota exceeded": "billing",
         "request timed out": "timeout",
         "invalid JSON schema": "parse_error",
         "content filter blocked": "content_filter",
+        "this model is not available at your current rate tier": "model_unavailable",
+        "operate separately without provider throttling": "unknown_error",
         "something odd": "unknown_error",
     }
 
     for message, expected in cases.items():
         assert classify_enhancement_failure(message) == expected
+
+
+def test_classify_enhancement_failure_uses_hermes_status_and_body_refinement() -> None:
+    assert (
+        classify_enhancement_failure(
+            "Error",
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            status_code=400,
+            body={
+                "error": {
+                    "message": "The long context beta is not yet available for this subscription.",
+                    "type": "invalid_request_error",
+                }
+            },
+        )
+        == "oauth_long_context_beta_forbidden"
+    )
+    assert (
+        classify_enhancement_failure(
+            "Error",
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            status_code=429,
+            body={"error": {"message": "extra usage long context is not enabled"}},
+        )
+        == "long_context_tier"
+    )

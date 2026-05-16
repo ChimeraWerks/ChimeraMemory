@@ -276,6 +276,60 @@ Each PA apply writes a backup, a receipt, and updates the install-state ledger .
 | `memory_decay_report` | Per-type exponential decay rates. Procedural decays slowest (load-bearing), opinions fastest. |
 | `memory_surprise` | Novelty scoring via nearest-neighbor embedding distance. High surprise = unique. Low = redundant. |
 
+## Memory Enhancement (Optional Sidecar)
+
+The memory enhancement system extracts structured metadata (topics, entities, action items) from your curated memory files using a configurable LLM provider. Output lives in a separate database table for inspection ... it does **not** edit memory files, change agent behavior, or get treated as instructions until you explicitly promote it.
+
+### What It Does
+
+When a memory file is written or updated AND shadow mode is enabled for that persona (via `CHIMERA_MEMORY_ENHANCEMENT_SHADOW_MODE=true` plus the persona-allowlist env var), the indexer enqueues it for enhancement. A sidecar worker pulls jobs, sends them to the configured provider, and writes the extracted metadata back to a dedicated shadow table. Inspect the per-job outcome via `memory_enhancement_shadow_report` (status, type inference, sensitivity escalation, topic/entity overlap with frontmatter tags). The separate `memory_review_pending` / `memory_review_action` tools govern memory files themselves, not enhancement output.
+
+### Provider Support
+
+Configurable provider order:
+
+- **OpenAI** (`gpt-5.4` and similar)
+- **Anthropic** (Claude OAuth via Hermes-pattern device-code flow)
+- **Google** (Code Assist via OAuth PKCE + loopback HTTP server)
+- **Local** (Kobold, LM Studio, Ollama, OpenAI-compatible endpoints)
+- **Dry run** (deterministic local fallback ... no model call required)
+
+OAuth flows mirror Hermes's call patterns at the wire level: dynamic Claude Code version detection (queries `claude --version` with a fallback constant), exact UA strings (`claude-cli/{version} (external, cli)`), Content-Type that matches the actual request body shape, full beta-set headers.
+
+### Stage Gates
+
+The enhancement system is staged for safety. Each stage explicitly does not unlock the next:
+
+| Stage | What's enabled | What's NOT enabled |
+|-------|---------------|--------------------|
+| Stage 0 (manual smoke) | Operator manually triggers enhancement via CLI (`chimera-memory enhance enqueue --file X`) for development inspection | Auto-enqueue on memory writes, file edits, behavior changes |
+| Stage 1 (DB metadata only) | Writes extracted metadata to a dedicated DB table for inspection | Memory file edits, persona behavior changes, instruction-grade use |
+| Stage 2 (writeback) | Gated on rename normalization + single-slot variance follow-ups | Default-on behavior |
+| Stage 3 (default-on) | Gated on type-aware summary contract + per-type budget rules | — |
+
+Set `CHIMERA_MEMORY_ENHANCEMENT_SHADOW_MODE=true` and `CHIMERA_MEMORY_ENHANCEMENT_SHADOW_PERSONAS=<persona>` to enable shadow mode for a specific persona's writes.
+
+### Credential Governance
+
+When the enhancement system uses cloud providers, six clauses govern credential handling:
+
+1. **Credential discovery can be automatic; credential consumption must be explicit.** Auto-detect of existing credentials is fine; auto-use without confirmation is not.
+2. **Pilot/local: reuse is acceptable after explicit consent + provenance.** Borrowed credentials need a confirmation step plus recorded `credential_source=...` metadata.
+3. **Daemon/default-on: purpose-specific credential unless ToS + scopes are clean.** Long-running automation uses its own credential, not a borrowed one.
+4. **Silent import dies.** Auto-consume-without-prompt is not allowed.
+5. **Local provenance is forensic, not isolating.** Recording the credential source helps debugging but doesn't isolate ... provider-side logs still collapse under one auth identity.
+6. **Borrowed auth must be revocable without damaging the source tool, or it stays pilot-only.** Test for graduation: can you kill the borrowed-auth consumer without breaking the source?
+
+### Sensitivity-Tier Governance
+
+Enhancement output is scored on a sensitivity scale (`standard` / `restricted` / `confidential`) via a deterministic gate. Patterns include:
+
+- **Literal prefixes:** `sk-ant-`, `MTQ`, Discord webhook URLs, `ghp_`/`gho_`/`ghs_`/`ghr_`, `AKIA`, `ASIA`
+- **Keywords:** oauth, refresh-token, access-token, api-key, secret, password, bearer, webhook, private-key, credential
+- **Dual-scan:** both model output AND original sidecar request context get scanned
+
+Restricted memories are flagged `can_use_as_instruction: false` and require explicit review via `memory_review_action` before they're allowed to influence agent behavior.
+
 ## Memory File Format
 
 Markdown + YAML frontmatter:
@@ -517,12 +571,30 @@ memory_fts (content)
 - [x] PersonifyAgents installer handlers (deterministic per-runtime wiring)
 - [x] `split-db` CLI for per-persona DB isolation
 
-### Phase 6 — Future
+### Phase 6 ✅ — Memory Enhancement + Provider Layer
+- [x] Provider sidecar (OpenAI / Anthropic / Google / local backends)
+- [x] OAuth lifecycle ownership in CM (relocation from PA, slices 1-6)
+- [x] Anthropic OAuth via Hermes-pattern device-code flow (dynamic CC-version detection, exact UA, full beta set)
+- [x] Google OAuth via PKCE + loopback HTTP server (mirrors Hermes pattern)
+- [x] OpenAI Codex OAuth import + transport
+- [x] Multi-account credential pool with hot-swap + exhaustion failover
+- [x] Memory enhancement queue + shadow mode (Stage 1 approved Day 61 for sarah-persona allowlist; activates on runtime restart)
+- [x] Sensitivity-tier deterministic gate (literal-prefix + keyword patterns + dual-scan)
+- [x] Memory review queue (`memory_review_pending` / `memory_review_action`)
+- [x] Entity graph + reasoning edges (typed connections, temporal sweep)
+- [x] Pyramid summaries for long imported memories
+- [x] Import pipelines: ChatGPT / Obsidian / Gmail / Perplexity / Grok / Twitter / Instagram / Google Activity / Atom-Blogger
+
+### Phase 7 — Future
+- [ ] GitHub Actions CI workflow for CM (currently local `pytest` green; no remote CI configured — known Day 60 follow-up)
+- [ ] Stage 2 enhancement writeback (gated on rename normalization + single-slot variance work)
+- [ ] Type-aware summary contract (per-type budget rules + sentence-aware truncation)
 - [ ] Claim extraction + contradiction detection
 - [ ] Runtime context-aware zone scoring (currently uses neutral baseline)
 - [ ] Encryption at rest
 - [ ] Export (markdown / JSON / CSV)
 - [ ] Conversation branch detection (harness rewinds)
+- [ ] HTTP/SSE MCP transport for service-mode (single owner-process per persona DB)
 
 ## Compatibility
 
