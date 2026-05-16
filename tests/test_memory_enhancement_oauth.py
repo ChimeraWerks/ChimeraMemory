@@ -136,6 +136,98 @@ def test_oauth_resolver_keeps_fresh_token_without_refresh(tmp_path: Path):
     assert resolved.access_token == "TEST_ONLY_GOOGLE_ACCESS"
 
 
+def test_oauth_store_tracks_active_credentials_per_provider(tmp_path: Path):
+    store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
+    credentials = [
+        MemoryEnhancementOAuthCredential(
+            name="openai-primary",
+            provider_id="openai",
+            source="browser:openai_device",
+            access_token="TEST_ONLY_OPENAI_PRIMARY",
+            refresh_token="TEST_ONLY_OPENAI_REFRESH_PRIMARY",
+            transport="openai_codex",
+            account_label="primary@example.invalid",
+        ),
+        MemoryEnhancementOAuthCredential(
+            name="openai-secondary",
+            provider_id="openai",
+            source="browser:openai_device",
+            access_token="TEST_ONLY_OPENAI_SECONDARY",
+            refresh_token="TEST_ONLY_OPENAI_REFRESH_SECONDARY",
+            transport="openai_codex",
+            account_label="secondary@example.invalid",
+        ),
+        MemoryEnhancementOAuthCredential(
+            name="google-memory",
+            provider_id="google",
+            source="browser:google_pkce",
+            access_token="TEST_ONLY_GOOGLE_ACCESS",
+            refresh_token="TEST_ONLY_GOOGLE_REFRESH",
+            transport="google_cloudcode",
+            project_id="project-test",
+        ),
+    ]
+    for credential in credentials:
+        store.upsert(credential)
+
+    assert [credential.name for credential in store.list_credentials(provider_id="openai")] == [
+        "openai-primary",
+        "openai-secondary",
+    ]
+    assert store.active_name("openai") == "openai-secondary"
+    assert store.active_name("google") == "google-memory"
+    assert store.get_active("openai").access_token == "TEST_ONLY_OPENAI_SECONDARY"
+
+    selected = store.set_active("openai-primary", provider_id="openai")
+    payload = store.read()
+
+    assert selected.name == "openai-primary"
+    assert store.get_active("openai").access_token == "TEST_ONLY_OPENAI_PRIMARY"
+    assert payload["active_provider"] == "openai"
+    assert payload["active_credentials"] == {
+        "openai": "openai-primary",
+        "google": "google-memory",
+    }
+
+
+def test_oauth_store_normalizes_stale_active_credentials(tmp_path: Path):
+    path = tmp_path / "memory-oauth.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "active_provider": "openai",
+                "active_credentials": {
+                    "openai": "missing-openai",
+                    "google": "google-memory",
+                    "unsupported": "ignored",
+                },
+                "providers": {
+                    "google": {
+                        "google-memory": {
+                            "provider_id": "google",
+                            "source": "browser:google_pkce",
+                            "access_token": "TEST_ONLY_GOOGLE_ACCESS",
+                            "refresh_token": "TEST_ONLY_GOOGLE_REFRESH",
+                            "transport": "google_cloudcode",
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    store = MemoryEnhancementOAuthStore(path)
+
+    payload = store.read()
+
+    assert payload["active_provider"] == ""
+    assert payload["active_credentials"] == {"google": "google-memory"}
+    assert store.get_active("google").name == "google-memory"
+    with pytest.raises(MemoryEnhancementCredentialResolutionError, match="active credential unavailable"):
+        store.get_active("openai")
+
+
 def test_refresh_anthropic_oauth_posts_form_and_preserves_unrotated_refresh_token():
     captured: dict[str, object] = {}
 

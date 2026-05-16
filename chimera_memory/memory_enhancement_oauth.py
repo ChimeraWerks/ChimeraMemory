@@ -172,7 +172,55 @@ class MemoryEnhancementOAuthStore:
             providers = payload.setdefault("providers", {})
             provider_bucket = providers.setdefault(credential.provider_id, {})
             provider_bucket[credential.name] = credential.to_dict()
+            _set_active_credential_in_payload(payload, credential.provider_id, credential.name)
             self._write_unlocked(payload)
+
+    def list_credentials(self, *, provider_id: str = "") -> tuple[MemoryEnhancementOAuthCredential, ...]:
+        if provider_id:
+            require_valid_oauth_provider_id(provider_id)
+        with _store_lock(self.path):
+            payload = self._read_unlocked()
+        providers = payload.get("providers") if isinstance(payload.get("providers"), Mapping) else {}
+        credentials: list[MemoryEnhancementOAuthCredential] = []
+        for current_provider_id in sorted(providers):
+            if provider_id and current_provider_id != provider_id:
+                continue
+            bucket = providers.get(current_provider_id)
+            if not isinstance(bucket, Mapping):
+                continue
+            for name in sorted(bucket):
+                raw = bucket.get(name)
+                if isinstance(name, str) and isinstance(raw, Mapping):
+                    credentials.append(MemoryEnhancementOAuthCredential.from_dict(name, raw))
+        return tuple(credentials)
+
+    def active_name(self, provider_id: str) -> str:
+        require_valid_oauth_provider_id(provider_id)
+        with _store_lock(self.path):
+            payload = self._read_unlocked()
+        return _active_credential_name_from_payload(payload, provider_id)
+
+    def set_active(self, name: str, *, provider_id: str) -> MemoryEnhancementOAuthCredential:
+        require_valid_oauth_name(name)
+        require_valid_oauth_provider_id(provider_id)
+        with _store_lock(self.path):
+            payload = self._read_unlocked()
+            credential = _get_credential_from_store_payload(payload, name, provider_id=provider_id)
+            _set_active_credential_in_payload(payload, provider_id, name)
+            self._write_unlocked(payload)
+            return credential
+
+    def get_active(self, provider_id: str) -> MemoryEnhancementOAuthCredential:
+        require_valid_oauth_provider_id(provider_id)
+        with _store_lock(self.path):
+            payload = self._read_unlocked()
+        active_name = _active_credential_name_from_payload(payload, provider_id)
+        if active_name:
+            return _get_credential_from_store_payload(payload, active_name, provider_id=provider_id)
+        credentials = self.list_credentials(provider_id=provider_id)
+        if len(credentials) == 1:
+            return credentials[0]
+        raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth active credential unavailable")
 
     def get(self, name: str, *, provider_id: str = "") -> MemoryEnhancementOAuthCredential:
         require_valid_oauth_name(name)
@@ -254,6 +302,31 @@ def _get_credential_from_store_payload(
     if len(matches) > 1:
         raise ProtocolValidationError("memory enhancement oauth credential ref is ambiguous")
     raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth credential unavailable")
+
+
+def _set_active_credential_in_payload(payload: dict[str, Any], provider_id: str, name: str) -> None:
+    require_valid_oauth_provider_id(provider_id)
+    require_valid_oauth_name(name)
+    active_credentials = payload.setdefault("active_credentials", {})
+    if not isinstance(active_credentials, dict):
+        active_credentials = {}
+        payload["active_credentials"] = active_credentials
+    active_credentials[provider_id] = name
+    payload["active_provider"] = provider_id
+
+
+def _active_credential_name_from_payload(payload: Mapping[str, Any], provider_id: str) -> str:
+    require_valid_oauth_provider_id(provider_id)
+    active_credentials = payload.get("active_credentials")
+    providers = payload.get("providers") if isinstance(payload.get("providers"), Mapping) else {}
+    provider_bucket = providers.get(provider_id) if isinstance(providers, Mapping) else {}
+    if not isinstance(provider_bucket, Mapping):
+        return ""
+    if isinstance(active_credentials, Mapping):
+        name = active_credentials.get(provider_id)
+        if isinstance(name, str) and name in provider_bucket:
+            return name
+    return ""
 
 
 @dataclass(frozen=True)
@@ -668,7 +741,12 @@ def require_valid_oauth_provider_id(provider_id: str) -> None:
 
 
 def _empty_store() -> dict[str, Any]:
-    return {"version": OAUTH_STORE_VERSION, "providers": {}}
+    return {
+        "version": OAUTH_STORE_VERSION,
+        "active_provider": "",
+        "active_credentials": {},
+        "providers": {},
+    }
 
 
 def _normalize_store(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -685,7 +763,24 @@ def _normalize_store(payload: Mapping[str, Any]) -> dict[str, Any]:
                 credential = MemoryEnhancementOAuthCredential.from_dict(name, raw_credential)
                 require_valid_oauth_credential(credential)
                 providers[provider_id][name] = credential.to_dict()
-    return {"version": OAUTH_STORE_VERSION, "providers": providers}
+    active_credentials: dict[str, str] = {}
+    raw_active_credentials = payload.get("active_credentials")
+    if isinstance(raw_active_credentials, Mapping):
+        for provider_id, name in raw_active_credentials.items():
+            if provider_id in providers and isinstance(name, str) and name in providers[provider_id]:
+                active_credentials[provider_id] = name
+
+    raw_active_provider = payload.get("active_provider")
+    active_provider = raw_active_provider if isinstance(raw_active_provider, str) and raw_active_provider in providers else ""
+    if active_provider and active_provider not in active_credentials:
+        active_provider = ""
+
+    return {
+        "version": OAUTH_STORE_VERSION,
+        "active_provider": active_provider,
+        "active_credentials": active_credentials,
+        "providers": providers,
+    }
 
 
 @contextmanager
