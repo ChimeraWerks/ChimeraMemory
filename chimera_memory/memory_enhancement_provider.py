@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from .memory_enhancement import ENHANCEMENT_SCHEMA_VERSION
@@ -164,10 +165,37 @@ def _credential_ref(env: Mapping[str, str], provider_id: str) -> tuple[str, str]
     key = f"CHIMERA_MEMORY_ENHANCEMENT_{provider_id.upper()}_CREDENTIAL_REF"
     value = str(env.get(key, "")).strip()
     if not value:
+        active_value = _active_oauth_credential_ref(env, provider_id)
+        if active_value:
+            return active_value, ""
         return "", "credential_missing"
     if not _CREDENTIAL_REF_RE.match(value):
         return "", "invalid_credential_ref"
     return value, ""
+
+
+def _active_oauth_credential_ref(env: Mapping[str, str], provider_id: str) -> str:
+    if provider_id not in {"openai", "anthropic", "google"}:
+        return ""
+    try:
+        from .memory_enhancement_oauth import MemoryEnhancementOAuthStore
+
+        store = MemoryEnhancementOAuthStore(_oauth_store_path_from_env(env))
+        credential = store.get_active(provider_id)
+    except Exception:
+        return ""
+    ref = credential.ref.raw_ref
+    return ref if _CREDENTIAL_REF_RE.match(ref) else ""
+
+
+def _oauth_store_path_from_env(env: Mapping[str, str]) -> str | None:
+    explicit = str(env.get("CHIMERA_MEMORY_OAUTH_STORE") or env.get("PERSONIFYAGENTS_MEMORY_OAUTH_STORE") or "").strip()
+    if explicit:
+        return explicit
+    state_root = str(env.get("CHIMERA_MEMORY_STATE_ROOT") or env.get("PERSONIFYAGENTS_PWA_STATE_ROOT") or "").strip()
+    if state_root:
+        return str((Path(state_root).expanduser() / "auth.json").resolve())
+    return None
 
 
 def load_enhancement_budget(env: Mapping[str, str]) -> EnhancementBudget:

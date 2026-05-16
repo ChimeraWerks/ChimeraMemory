@@ -1,4 +1,5 @@
 from chimera_memory.memory_enhancement import build_memory_enhancement_request
+from chimera_memory.memory_enhancement_oauth import MemoryEnhancementOAuthCredential, MemoryEnhancementOAuthStore
 from chimera_memory.memory_enhancement_provider import (
     DEFAULT_PROVIDER_ORDER,
     build_enhancement_invocation,
@@ -48,6 +49,42 @@ def test_resolve_provider_plan_rejects_raw_looking_credential_ref() -> None:
     receipt = safe_provider_receipt(plan)
     assert receipt["candidates"][0]["credential_ref_present"] is False
     assert "raw-token-material" not in str(receipt)
+
+
+def test_resolve_provider_plan_uses_active_oauth_when_ref_missing(tmp_path) -> None:
+    store = MemoryEnhancementOAuthStore(tmp_path / "auth.json")
+    store.upsert(
+        MemoryEnhancementOAuthCredential(
+            name="openai-primary",
+            provider_id="openai",
+            source="browser:openai_device",
+            access_token="TEST_ONLY_OPENAI_PRIMARY",
+            refresh_token="TEST_ONLY_OPENAI_REFRESH_PRIMARY",
+            transport="openai_codex",
+        )
+    )
+    store.upsert(
+        MemoryEnhancementOAuthCredential(
+            name="openai-secondary",
+            provider_id="openai",
+            source="browser:openai_device",
+            access_token="TEST_ONLY_OPENAI_SECONDARY",
+            refresh_token="TEST_ONLY_OPENAI_REFRESH_SECONDARY",
+            transport="openai_codex",
+        )
+    )
+    store.set_active("openai-primary", provider_id="openai")
+
+    plan = resolve_enhancement_provider_plan(
+        {
+            "CHIMERA_MEMORY_ENHANCEMENT_PROVIDER_ORDER": "openai,dry_run",
+            "CHIMERA_MEMORY_OAUTH_STORE": str(store.path),
+        }
+    )
+
+    assert plan.selected.provider_id == "openai"
+    assert plan.selected.credential_ref == "oauth:openai-primary"
+    assert plan.selected.uses_user_oauth is True
 
 
 def test_resolve_provider_plan_uses_local_model_when_enabled() -> None:
