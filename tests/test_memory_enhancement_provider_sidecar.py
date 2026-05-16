@@ -120,6 +120,10 @@ def test_resolving_provider_client_marks_pooled_api_key_exhausted_and_retries_ne
 
 def test_resolving_provider_client_uses_anthropic_oauth_transport(monkeypatch, tmp_path: Path):
     captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        "chimera_memory.memory_enhancement_provider_sidecar._get_claude_code_version",
+        lambda: "2.1.74",
+    )
 
     def fake_post_json(endpoint, payload, headers, *, opener, timeout_seconds):
         captured["endpoint"] = endpoint

@@ -24,6 +24,7 @@ from .memory_enhancement_oauth import (
     MemoryEnhancementOAuthStore,
     MemoryEnhancementPooledCredential,
     OAuthMemoryEnhancementCredentialResolver,
+    _get_claude_code_version,
 )
 from .memory_enhancement_google import GOOGLE_CLOUDCODE_MEMORY_DEFAULT_MODEL, google_cloudcode_model_candidates
 
@@ -45,13 +46,6 @@ ANTHROPIC_OAUTH_ONLY_BETAS = (
     "claude-code-20250219",
     "oauth-2025-04-20",
 )
-CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
-ANTHROPIC_OAUTH_HEADERS = {
-    "anthropic-version": "2023-06-01",
-    "anthropic-beta": ",".join((*ANTHROPIC_COMMON_BETAS, *ANTHROPIC_OAUTH_ONLY_BETAS)),
-    "x-app": "cli",
-    "user-agent": f"claude-cli/{CLAUDE_CODE_VERSION_FALLBACK} (external, cli)",
-}
 GOOGLE_CLOUDCODE_HEADERS = {
     "User-Agent": "hermes-agent (gemini-cli-compat)",
     "X-Goog-Api-Client": "gl-python/hermes",
@@ -303,6 +297,15 @@ def _oauth_provider_id(provider_id: str) -> str:
     raise ProtocolValidationError("memory enhancement oauth provider unsupported")
 
 
+def _anthropic_oauth_headers() -> dict[str, str]:
+    return {
+        "anthropic-version": "2023-06-01",
+        "anthropic-beta": ",".join((*ANTHROPIC_COMMON_BETAS, *ANTHROPIC_OAUTH_ONLY_BETAS)),
+        "x-app": "cli",
+        "user-agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
+    }
+
+
 def _invoke_openai_codex(
     invocation: Mapping[str, Any],
     provider: Mapping[str, str],
@@ -486,7 +489,7 @@ def _invoke_anthropic_oauth(
         payload,
         {
             "Authorization": f"Bearer {credential.access_token}",
-            **ANTHROPIC_OAUTH_HEADERS,
+            **_anthropic_oauth_headers(),
         },
         opener=opener or model_client.urllib.request.urlopen,
         timeout_seconds=budget.timeout_seconds,

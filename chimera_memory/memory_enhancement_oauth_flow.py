@@ -28,6 +28,7 @@ from .memory_enhancement_oauth import (
     _chmod_owner_only,
     _credential_from_refresh_payload,
     _expires_at_ms_from_refresh_payload,
+    _get_claude_code_version,
     _google_oauth_client_credentials,
     _post_form_json,
     require_valid_oauth_name,
@@ -242,7 +243,10 @@ def submit_memory_enhancement_oauth_flow(
                 "redirect_uri": ANTHROPIC_OAUTH_REDIRECT_URI,
                 "code_verifier": str(state.get("code_verifier") or ""),
             },
-            headers={"User-Agent": "chimera-memory-oauth/1.0"},
+            headers={
+                "Content-Type": "application/json",
+                "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
+            },
             opener=opener,
             timeout_seconds=20,
         )

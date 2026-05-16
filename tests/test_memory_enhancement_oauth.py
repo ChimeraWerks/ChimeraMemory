@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import chimera_memory.memory_enhancement_oauth as oauth_module
 from chimera_memory.memory_enhancement_credentials import (
     MemoryEnhancementCredentialRef,
     MemoryEnhancementCredentialResolutionError,
@@ -26,6 +27,33 @@ from chimera_memory.memory_enhancement_oauth import (
     refresh_memory_enhancement_oauth_credential,
     resolve_oauth_store_path,
 )
+
+
+def test_claude_code_version_detection_uses_cli_version(monkeypatch):
+    calls: list[list[str]] = []
+
+    class Result:
+        returncode = 0
+        stdout = "3.4.5 (Claude Code)\n"
+
+    def fake_run(args, **_kwargs):
+        calls.append(list(args))
+        return Result()
+
+    monkeypatch.setattr(oauth_module, "_claude_code_version_cache", None)
+    monkeypatch.setattr(oauth_module.shutil, "which", lambda command: command if command == "claude" else None)
+    monkeypatch.setattr(oauth_module.subprocess, "run", fake_run)
+
+    assert oauth_module._get_claude_code_version() == "3.4.5"
+    assert oauth_module._get_claude_code_version() == "3.4.5"
+    assert calls == [["claude", "--version"]]
+
+
+def test_claude_code_version_detection_falls_back_when_cli_unavailable(monkeypatch):
+    monkeypatch.setattr(oauth_module, "_claude_code_version_cache", None)
+    monkeypatch.setattr(oauth_module.shutil, "which", lambda _command: None)
+
+    assert oauth_module._get_claude_code_version() == oauth_module.CLAUDE_CODE_VERSION_FALLBACK
 
 
 def test_oauth_store_round_trips_provider_credentials_without_safe_token_echo(tmp_path: Path):
@@ -361,10 +389,12 @@ def test_oauth_store_normalizes_stale_active_credentials(tmp_path: Path):
         store.get_active("openai")
 
 
-def test_refresh_anthropic_oauth_posts_form_and_preserves_unrotated_refresh_token():
+def test_refresh_anthropic_oauth_posts_form_and_preserves_unrotated_refresh_token(monkeypatch):
+    monkeypatch.setattr(oauth_module, "_get_claude_code_version", lambda: "2.1.74")
     captured: dict[str, object] = {}
 
     def opener(request, *, timeout):
+        captured["request"] = request
         captured["url"] = request.full_url
         captured["timeout"] = timeout
         captured["payload"] = urllib.parse.parse_qs(request.data.decode("utf-8"))
@@ -385,6 +415,8 @@ def test_refresh_anthropic_oauth_posts_form_and_preserves_unrotated_refresh_toke
     payload = captured["payload"]
     assert "platform.claude.com" in captured["url"]
     assert captured["timeout"] == 20
+    assert request_header(captured["request"], "Content-Type") == "application/x-www-form-urlencoded"
+    assert request_header(captured["request"], "User-Agent") == "claude-cli/2.1.74 (external, cli)"
     assert payload["grant_type"] == ["refresh_token"]
     assert payload["refresh_token"] == ["TEST_ONLY_OLD_REFRESH"]
     assert refreshed.access_token == "TEST_ONLY_NEW_ACCESS"
@@ -509,6 +541,17 @@ def test_oauth_resolver_rejects_missing_or_wrong_scheme(tmp_path: Path):
         resolver.resolve(MemoryEnhancementCredentialRef(scheme="env", name="OPENAI_API_KEY"))
     with pytest.raises(MemoryEnhancementCredentialResolutionError, match="unavailable"):
         resolver.resolve(MemoryEnhancementCredentialRef(scheme="oauth", name="missing-memory"))
+
+
+def request_header(request, name: str) -> str:
+    for mapping in (request.headers, request.unredirected_hdrs):
+        for key, value in mapping.items():
+            if key.lower() == name.lower():
+                return str(value)
+    direct = request.get_header(name) or request.get_header(name.lower()) or request.get_header(name.title())
+    if direct:
+        return str(direct)
+    return ""
 
 
 class _json_response:

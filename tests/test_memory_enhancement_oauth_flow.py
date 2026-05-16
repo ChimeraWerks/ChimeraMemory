@@ -13,15 +13,21 @@ from chimera_memory.memory_enhancement_oauth_flow import (
 )
 
 
-def test_anthropic_browser_oauth_flow_persists_refreshable_credential(tmp_path: Path):
+def test_anthropic_browser_oauth_flow_persists_refreshable_credential(monkeypatch, tmp_path: Path):
+    monkeypatch.setattr(
+        "chimera_memory.memory_enhancement_oauth_flow._get_claude_code_version",
+        lambda: "2.1.74",
+    )
     store = MemoryEnhancementOAuthStore(tmp_path / "auth.json")
     started = start_memory_enhancement_oauth_flow("anthropic", store=store)
     flow_state = _flow_state(tmp_path, started["flow_id"])
     captured: dict[str, object] = {}
 
     def opener(request, *, timeout):
+        captured["request"] = request
         captured["url"] = request.full_url
         captured["timeout"] = timeout
+        captured["raw_body"] = request.data.decode("utf-8")
         captured["payload"] = json.loads(request.data.decode("utf-8"))
         return _json_response(
             {
@@ -42,6 +48,9 @@ def test_anthropic_browser_oauth_flow_persists_refreshable_credential(tmp_path: 
     assert result["status"] == "approved"
     assert "claude.ai/oauth/authorize" in started["authorization_url"]
     assert captured["url"] == "https://console.anthropic.com/v1/oauth/token"
+    assert request_header(captured["request"], "User-Agent") == "claude-cli/2.1.74 (external, cli)"
+    assert request_header(captured["request"], "Content-Type") == "application/json"
+    assert str(captured["raw_body"]).lstrip().startswith("{")
     assert captured["payload"]["grant_type"] == "authorization_code"
     assert captured["payload"]["code"] == "TEST_ONLY_AUTHORIZATION_CODE"
     assert credential.access_token == "TEST_ONLY_ANTHROPIC_ACCESS"
@@ -166,6 +175,17 @@ def test_openai_device_oauth_flow_polls_and_persists_codex_credential(tmp_path: 
 
 def _flow_state(tmp_path: Path, flow_id: str):
     return json.loads((tmp_path / "oauth-flows" / f"{flow_id}.json").read_text(encoding="utf-8"))
+
+
+def request_header(request: urllib.request.Request, name: str) -> str:
+    for mapping in (request.headers, request.unredirected_hdrs):
+        for key, value in mapping.items():
+            if key.lower() == name.lower():
+                return str(value)
+    direct = request.get_header(name) or request.get_header(name.lower()) or request.get_header(name.title())
+    if direct:
+        return str(direct)
+    return ""
 
 
 class _json_response:

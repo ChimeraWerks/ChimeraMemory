@@ -7,6 +7,7 @@ import os
 import re
 import secrets
 import shutil
+import subprocess
 import time
 import urllib.error
 import urllib.parse
@@ -52,6 +53,7 @@ _EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60
 
 ANTHROPIC_OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
+_claude_code_version_cache: str | None = None
 ANTHROPIC_OAUTH_TOKEN_ENDPOINTS = (
     "https://platform.claude.com/v1/oauth/token",
     "https://console.anthropic.com/v1/oauth/token",
@@ -69,6 +71,37 @@ OPENAI_CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_CODEX_OAUTH_TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token"
 
 RefreshCallback = Callable[["MemoryEnhancementOAuthCredential"], "MemoryEnhancementOAuthCredential"]
+
+
+def _detect_claude_code_version() -> str:
+    """Detect the installed Claude Code version, falling back only if unavailable."""
+    for command in ("claude", "claude-code"):
+        if shutil.which(command) is None:
+            continue
+        try:
+            result = subprocess.run(
+                [command, "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode != 0:
+            continue
+        version = result.stdout.strip().split(maxsplit=1)[0] if result.stdout.strip() else ""
+        if version and version[0].isdigit():
+            return version
+    return CLAUDE_CODE_VERSION_FALLBACK
+
+
+def _get_claude_code_version() -> str:
+    """Lazily resolve the Claude Code version for Anthropic OAuth headers."""
+    global _claude_code_version_cache
+    if _claude_code_version_cache is None:
+        _claude_code_version_cache = _detect_claude_code_version()
+    return _claude_code_version_cache
 
 
 @dataclass(frozen=True)
@@ -931,8 +964,9 @@ def _refresh_anthropic_oauth(
                     "client_id": ANTHROPIC_OAUTH_CLIENT_ID,
                 },
                 headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
                     "Accept": "application/json",
-                    "User-Agent": f"claude-cli/{CLAUDE_CODE_VERSION_FALLBACK} (external, cli)",
+                    "User-Agent": f"claude-cli/{_get_claude_code_version()} (external, cli)",
                 },
                 opener=opener,
                 timeout_seconds=_TOKEN_REQUEST_TIMEOUT_SECONDS,
