@@ -1,5 +1,10 @@
 from chimera_memory.memory_enhancement import build_memory_enhancement_request
-from chimera_memory.memory_enhancement_oauth import MemoryEnhancementOAuthCredential, MemoryEnhancementOAuthStore
+from chimera_memory.memory_enhancement_oauth import (
+    AUTH_TYPE_API_KEY,
+    MemoryEnhancementOAuthCredential,
+    MemoryEnhancementOAuthStore,
+    MemoryEnhancementPooledCredential,
+)
 from chimera_memory.memory_enhancement_provider import (
     DEFAULT_PROVIDER_ORDER,
     build_enhancement_invocation,
@@ -85,6 +90,32 @@ def test_resolve_provider_plan_uses_active_oauth_when_ref_missing(tmp_path) -> N
     assert plan.selected.provider_id == "openai"
     assert plan.selected.credential_ref == "oauth:openai-primary"
     assert plan.selected.uses_user_oauth is True
+
+
+def test_resolve_provider_plan_uses_active_pooled_api_key_when_ref_missing(tmp_path) -> None:
+    store = MemoryEnhancementOAuthStore(tmp_path / "auth.json")
+    store.upsert_pooled(
+        MemoryEnhancementPooledCredential(
+            provider_id="openrouter",
+            id="openrouter-primary",
+            label="Primary OpenRouter",
+            auth_type=AUTH_TYPE_API_KEY,
+            priority=0,
+            source="manual",
+            access_token="TEST_ONLY_OPENROUTER_KEY",
+        )
+    )
+
+    plan = resolve_enhancement_provider_plan(
+        {
+            "CHIMERA_MEMORY_ENHANCEMENT_PROVIDER_ORDER": "openrouter,dry_run",
+            "CHIMERA_MEMORY_OAUTH_STORE": str(store.path),
+        }
+    )
+
+    assert plan.selected.provider_id == "openrouter"
+    assert plan.selected.credential_ref == "secret:openrouter-primary"
+    assert plan.selected.uses_user_oauth is False
 
 
 def test_resolve_provider_plan_uses_local_model_when_enabled() -> None:

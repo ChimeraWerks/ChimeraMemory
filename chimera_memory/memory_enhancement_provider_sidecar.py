@@ -13,11 +13,14 @@ from typing import Any
 from .memory_enhancement_credentials import (
     EnvMemoryEnhancementCredentialResolver,
     MemoryEnhancementCredentialRef,
+    MemoryEnhancementCredentialResolutionError,
     MemoryEnhancementCredentialResolver,
     ProtocolValidationError,
 )
 from .memory_enhancement_oauth import (
+    AUTH_TYPE_API_KEY,
     MemoryEnhancementOAuthCredential,
+    MemoryEnhancementOAuthStore,
     OAuthMemoryEnhancementCredentialResolver,
 )
 from .memory_enhancement_google import GOOGLE_CLOUDCODE_MEMORY_DEFAULT_MODEL, google_cloudcode_model_candidates
@@ -83,8 +86,27 @@ class ResolvingMemoryEnhancementProviderClient:
         if ref.scheme == "oauth":
             credential = self._oauth_resolver.resolve_oauth(ref, provider_id=_oauth_provider_id(provider_id))
             return self._invoke_oauth(invocation, provider, credential)
+        if ref.scheme == "secret":
+            pooled = self._resolve_pooled_api_key(ref, provider_id=provider_id)
+            if pooled:
+                return self._api_key_client_factory(pooled.access_token).invoke(invocation)
         resolved = self._credential_resolver.resolve(ref)
         return self._api_key_client_factory(resolved.value).invoke(invocation)
+
+    def _resolve_pooled_api_key(
+        self,
+        ref: MemoryEnhancementCredentialRef,
+        *,
+        provider_id: str,
+    ):
+        store = self._oauth_resolver.store or MemoryEnhancementOAuthStore()
+        try:
+            credential = store.get_pooled(ref.name, provider_id=provider_id)
+        except (MemoryEnhancementCredentialResolutionError, ProtocolValidationError):
+            return None
+        if credential.auth_type != AUTH_TYPE_API_KEY:
+            return None
+        return credential
 
     def _invoke_oauth(
         self,

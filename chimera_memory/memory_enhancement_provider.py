@@ -165,7 +165,7 @@ def _credential_ref(env: Mapping[str, str], provider_id: str) -> tuple[str, str]
     key = f"CHIMERA_MEMORY_ENHANCEMENT_{provider_id.upper()}_CREDENTIAL_REF"
     value = str(env.get(key, "")).strip()
     if not value:
-        active_value = _active_oauth_credential_ref(env, provider_id)
+        active_value = _active_pooled_credential_ref(env, provider_id)
         if active_value:
             return active_value, ""
         return "", "credential_missing"
@@ -174,14 +174,14 @@ def _credential_ref(env: Mapping[str, str], provider_id: str) -> tuple[str, str]
     return value, ""
 
 
-def _active_oauth_credential_ref(env: Mapping[str, str], provider_id: str) -> str:
-    if provider_id not in {"openai", "anthropic", "google"}:
+def _active_pooled_credential_ref(env: Mapping[str, str], provider_id: str) -> str:
+    if provider_id not in NETWORK_PROVIDERS:
         return ""
     try:
         from .memory_enhancement_oauth import MemoryEnhancementOAuthStore
 
         store = MemoryEnhancementOAuthStore(_oauth_store_path_from_env(env))
-        credential = store.get_active(provider_id)
+        credential = store.get_active_pooled(provider_id)
     except Exception:
         return ""
     ref = credential.ref.raw_ref
@@ -356,7 +356,7 @@ def _provider_candidate(provider_id: str, env: Mapping[str, str]) -> Enhancement
         reason=reason,
         credential_ref=credential_ref,
         requires_network=True,
-        uses_user_oauth=True,
+        uses_user_oauth=credential_ref.startswith("oauth:"),
     )
 
 

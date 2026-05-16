@@ -14,8 +14,11 @@ from chimera_memory.memory_enhancement_credentials import (
     ProtocolValidationError,
 )
 from chimera_memory.memory_enhancement_oauth import (
+    AUTH_TYPE_API_KEY,
+    AUTH_TYPE_OAUTH,
     MemoryEnhancementOAuthCredential,
     MemoryEnhancementOAuthStore,
+    MemoryEnhancementPooledCredential,
     OAuthMemoryEnhancementCredentialResolver,
     _google_oauth_client_credentials,
     refresh_memory_enhancement_oauth_credential,
@@ -47,6 +50,86 @@ def test_oauth_store_round_trips_provider_credentials_without_safe_token_echo(tm
     assert "TEST_ONLY_REFRESH_TOKEN" not in safe_json
     assert "anthropic-memory" not in safe_json
     assert safe_json.count("anthropic") >= 1
+
+
+def test_oauth_store_writes_hermes_pool_and_legacy_provider_mirror(tmp_path: Path):
+    store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
+    credential = MemoryEnhancementOAuthCredential(
+        name="openai-memory",
+        provider_id="openai",
+        source="browser:openai_device",
+        access_token="TEST_ONLY_OPENAI_ACCESS",
+        refresh_token="TEST_ONLY_OPENAI_REFRESH",
+        transport="openai_codex",
+        account_label="primary@example.invalid",
+    )
+
+    store.upsert(credential)
+    payload = store.read()
+
+    pool_entry = payload["credential_pool"]["openai"][0]
+    assert pool_entry["id"] == "openai-memory"
+    assert pool_entry["auth_type"] == AUTH_TYPE_OAUTH
+    assert pool_entry["label"] == "primary@example.invalid"
+    assert payload["providers"]["openai"]["openai-memory"]["transport"] == "openai_codex"
+    assert store.get_pooled("openai-memory", provider_id="openai").auth_type == AUTH_TYPE_OAUTH
+
+
+def test_pooled_api_key_credentials_round_trip_and_select_without_safe_token_echo(tmp_path: Path):
+    store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
+    store.upsert_pooled(
+        MemoryEnhancementPooledCredential(
+            provider_id="openrouter",
+            id="openrouter-primary",
+            label="Primary OpenRouter",
+            auth_type=AUTH_TYPE_API_KEY,
+            priority=10,
+            source="manual",
+            access_token="TEST_ONLY_OPENROUTER_KEY",
+        )
+    )
+
+    loaded = store.get_active_pooled("openrouter")
+    safe_json = json.dumps(loaded.to_safe_dict(), sort_keys=True)
+    payload = store.read()
+
+    assert loaded.ref.raw_ref == "secret:openrouter-primary"
+    assert loaded.auth_type == AUTH_TYPE_API_KEY
+    assert payload["credential_pool"]["openrouter"][0]["auth_type"] == AUTH_TYPE_API_KEY
+    assert payload["providers"] == {}
+    assert "TEST_ONLY_OPENROUTER_KEY" not in safe_json
+    assert "openrouter-primary" not in safe_json
+
+
+def test_oauth_store_migrates_legacy_provider_entries_into_pool(tmp_path: Path):
+    path = tmp_path / "memory-oauth.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "active_provider": "google",
+                "active_credentials": {"google": "google-memory"},
+                "providers": {
+                    "google": {
+                        "google-memory": {
+                            "provider_id": "google",
+                            "source": "browser:google_pkce",
+                            "access_token": "TEST_ONLY_GOOGLE_ACCESS",
+                            "refresh_token": "TEST_ONLY_GOOGLE_REFRESH",
+                            "transport": "google_cloudcode",
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = MemoryEnhancementOAuthStore(path).read()
+
+    assert payload["credential_pool"]["google"][0]["id"] == "google-memory"
+    assert payload["credential_pool"]["google"][0]["auth_type"] == AUTH_TYPE_OAUTH
+    assert payload["providers"]["google"]["google-memory"]["transport"] == "google_cloudcode"
 
 
 def test_oauth_resolver_returns_legacy_value_for_current_static_boundaries(tmp_path: Path):

@@ -7,8 +7,10 @@ from types import SimpleNamespace
 
 from chimera_memory.memory_enhancement_credentials import EnvMemoryEnhancementCredentialResolver
 from chimera_memory.memory_enhancement_oauth import (
+    AUTH_TYPE_API_KEY,
     MemoryEnhancementOAuthCredential,
     MemoryEnhancementOAuthStore,
+    MemoryEnhancementPooledCredential,
     OAuthMemoryEnhancementCredentialResolver,
 )
 from chimera_memory.memory_enhancement_provider_sidecar import (
@@ -37,6 +39,39 @@ def test_resolving_provider_client_resolves_api_key_ref_per_invocation():
 
     assert result == {"summary": "TEST_ONLY_API_KEY"}
     assert captured == ["TEST_ONLY_API_KEY"]
+
+
+def test_resolving_provider_client_resolves_pooled_api_key_ref_per_invocation(tmp_path: Path):
+    captured: list[str] = []
+
+    class FakeApiKeyClient:
+        def __init__(self, token: str) -> None:
+            self.token = token
+
+        def invoke(self, _invocation):
+            return {"summary": self.token}
+
+    store = MemoryEnhancementOAuthStore(tmp_path / "memory-oauth.json")
+    store.upsert_pooled(
+        MemoryEnhancementPooledCredential(
+            provider_id="openrouter",
+            id="openrouter-primary",
+            label="Primary OpenRouter",
+            auth_type=AUTH_TYPE_API_KEY,
+            priority=0,
+            source="manual",
+            access_token="TEST_ONLY_OPENROUTER_KEY",
+        )
+    )
+    client = ResolvingMemoryEnhancementProviderClient(
+        oauth_resolver=OAuthMemoryEnhancementCredentialResolver(store),
+        api_key_client_factory=lambda token: captured.append(token) or FakeApiKeyClient(token),
+    )
+
+    result = client.invoke(_invocation("openrouter", "openai/gpt-4o-mini", "secret:openrouter-primary"))
+
+    assert result == {"summary": "TEST_ONLY_OPENROUTER_KEY"}
+    assert captured == ["TEST_ONLY_OPENROUTER_KEY"]
 
 
 def test_resolving_provider_client_uses_anthropic_oauth_transport(monkeypatch, tmp_path: Path):

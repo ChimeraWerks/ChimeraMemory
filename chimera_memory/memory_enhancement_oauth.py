@@ -29,8 +29,13 @@ from .memory_enhancement_credentials import (
 
 OAUTH_STORE_VERSION = 1
 OAUTH_PROVIDER_IDS = frozenset(("openai", "anthropic", "google"))
+POOL_PROVIDER_IDS = frozenset(("openai", "anthropic", "google", "openrouter"))
 OAUTH_TRANSPORTS = frozenset(("openai_codex", "anthropic_oauth", "google_cloudcode"))
 OAUTH_REF_SCHEME = "oauth"
+POOL_API_KEY_REF_SCHEME = "secret"
+AUTH_TYPE_OAUTH = "oauth"
+AUTH_TYPE_API_KEY = "api_key"
+POOL_AUTH_TYPES = frozenset((AUTH_TYPE_OAUTH, AUTH_TYPE_API_KEY))
 
 _OAUTH_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.:\-]{0,119}$")
 _DEFAULT_STATE_ROOT = Path(".chimera-memory") / "oauth"
@@ -58,6 +63,153 @@ OPENAI_CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 OPENAI_CODEX_OAUTH_TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token"
 
 RefreshCallback = Callable[["MemoryEnhancementOAuthCredential"], "MemoryEnhancementOAuthCredential"]
+
+
+@dataclass(frozen=True)
+class MemoryEnhancementPooledCredential:
+    """Hermes-shaped credential-pool entry for memory-enhancement providers."""
+
+    provider_id: str
+    id: str
+    label: str
+    auth_type: str
+    priority: int
+    source: str
+    access_token: str
+    refresh_token: str = ""
+    transport: str = ""
+    base_url: str = ""
+    project_id: str = ""
+    account_label: str = ""
+    expires_at_ms: int | None = None
+    last_status: str | None = None
+    last_status_at: float | None = None
+    last_error_code: int | None = None
+    last_error_reason: str | None = None
+    last_error_message: str | None = None
+    last_error_reset_at: float | None = None
+    request_count: int = 0
+    extra: Mapping[str, Any] = field(default_factory=dict)
+
+    @property
+    def ref(self) -> MemoryEnhancementCredentialRef:
+        scheme = OAUTH_REF_SCHEME if self.auth_type == AUTH_TYPE_OAUTH else POOL_API_KEY_REF_SCHEME
+        return MemoryEnhancementCredentialRef(scheme=scheme, name=self.id)
+
+    @classmethod
+    def from_dict(cls, provider_id: str, payload: Mapping[str, Any]) -> "MemoryEnhancementPooledCredential":
+        expires_at_ms = payload.get("expires_at_ms")
+        last_error_code = payload.get("last_error_code")
+        return cls(
+            provider_id=provider_id,
+            id=str(payload.get("id") or ""),
+            label=str(payload.get("label") or payload.get("source") or ""),
+            auth_type=str(payload.get("auth_type") or AUTH_TYPE_API_KEY),
+            priority=int(payload.get("priority") or 0),
+            source=str(payload.get("source") or ""),
+            access_token=str(payload.get("access_token") or ""),
+            refresh_token=str(payload.get("refresh_token") or ""),
+            transport=str(payload.get("transport") or ""),
+            base_url=str(payload.get("base_url") or ""),
+            project_id=str(payload.get("project_id") or ""),
+            account_label=str(payload.get("account_label") or ""),
+            expires_at_ms=int(expires_at_ms) if expires_at_ms is not None else None,
+            last_status=str(payload.get("last_status")) if payload.get("last_status") is not None else None,
+            last_status_at=float(payload.get("last_status_at")) if payload.get("last_status_at") is not None else None,
+            last_error_code=int(last_error_code) if last_error_code is not None else None,
+            last_error_reason=str(payload.get("last_error_reason")) if payload.get("last_error_reason") is not None else None,
+            last_error_message=str(payload.get("last_error_message")) if payload.get("last_error_message") is not None else None,
+            last_error_reset_at=(
+                float(payload.get("last_error_reset_at")) if payload.get("last_error_reset_at") is not None else None
+            ),
+            request_count=int(payload.get("request_count") or 0),
+            extra=payload.get("extra") if isinstance(payload.get("extra"), Mapping) else {},
+        )
+
+    @classmethod
+    def from_oauth(cls, credential: "MemoryEnhancementOAuthCredential", *, priority: int = 0) -> "MemoryEnhancementPooledCredential":
+        return cls(
+            provider_id=credential.provider_id,
+            id=credential.name,
+            label=credential.account_label or credential.name,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=priority,
+            source=credential.source,
+            access_token=credential.access_token,
+            refresh_token=credential.refresh_token,
+            transport=credential.transport,
+            base_url=credential.base_url,
+            project_id=credential.project_id,
+            account_label=credential.account_label,
+            expires_at_ms=credential.expires_at_ms,
+            extra=dict(credential.extra),
+        )
+
+    def to_oauth_credential(self) -> "MemoryEnhancementOAuthCredential":
+        if self.auth_type != AUTH_TYPE_OAUTH:
+            raise ProtocolValidationError("memory enhancement pooled credential is not oauth")
+        return MemoryEnhancementOAuthCredential(
+            name=self.id,
+            provider_id=self.provider_id,
+            source=self.source,
+            access_token=self.access_token,
+            refresh_token=self.refresh_token,
+            expires_at_ms=self.expires_at_ms,
+            transport=self.transport,
+            base_url=self.base_url,
+            project_id=self.project_id,
+            account_label=self.account_label,
+            extra=dict(self.extra),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        require_valid_pooled_credential(self)
+        payload: dict[str, Any] = {
+            "id": self.id,
+            "label": self.label,
+            "auth_type": self.auth_type,
+            "priority": int(self.priority),
+            "source": self.source,
+            "access_token": self.access_token,
+            "request_count": int(self.request_count),
+        }
+        optional_fields: dict[str, Any] = {
+            "refresh_token": self.refresh_token,
+            "transport": self.transport,
+            "base_url": self.base_url,
+            "project_id": self.project_id,
+            "account_label": self.account_label,
+            "expires_at_ms": self.expires_at_ms,
+            "last_status": self.last_status,
+            "last_status_at": self.last_status_at,
+            "last_error_code": self.last_error_code,
+            "last_error_reason": self.last_error_reason,
+            "last_error_message": self.last_error_message,
+            "last_error_reset_at": self.last_error_reset_at,
+        }
+        for key, value in optional_fields.items():
+            if value is not None and value != "":
+                payload[key] = value
+        if self.extra:
+            payload["extra"] = dict(self.extra)
+        return payload
+
+    def to_safe_dict(self) -> dict[str, object]:
+        require_valid_pooled_credential(self)
+        safe = self.ref.to_safe_dict()
+        safe.update({
+            "provider_id": self.provider_id,
+            "auth_type": self.auth_type,
+            "transport": self.transport,
+            "source": self.source,
+            "active": False,
+            "value_present": bool(self.access_token),
+            "refresh_token_present": bool(self.refresh_token),
+            "expires_at_ms_present": self.expires_at_ms is not None,
+            "account_label_present": bool(self.account_label),
+            "project_id_present": bool(self.project_id),
+        })
+        return safe
 
 
 @dataclass(frozen=True)
@@ -152,14 +304,12 @@ class MemoryEnhancementOAuthCredential:
 
 
 class MemoryEnhancementOAuthStore:
-    """Local auth store for memory-enhancement OAuth credentials.
+    """Local auth store for memory-enhancement provider credentials.
 
-    This store intentionally stays narrower than Hermes's generic
-    ``PooledCredential`` pool: API-key credentials remain env refs for now, and
-    this file owns only OAuth lifecycle state. We keep Hermes-compatible
-    ``active_provider`` for coarse compatibility, plus a PA-specific
-    ``active_credentials`` map so each provider can remember its selected
-    account independently for explicit hot-swap UX.
+    Hermes stores OAuth credentials and API keys in one per-provider
+    ``credential_pool``. CM mirrors that shape as the canonical store while
+    keeping the older OAuth-only ``providers`` map as a compatibility view for
+    existing PA callers and migrated auth files.
     """
 
     def __init__(self, path: str | Path | None = None, *, repo_root: str | Path | None = None) -> None:
@@ -175,35 +325,51 @@ class MemoryEnhancementOAuthStore:
 
     def upsert(self, credential: MemoryEnhancementOAuthCredential) -> None:
         require_valid_oauth_credential(credential)
+        self.upsert_pooled(MemoryEnhancementPooledCredential.from_oauth(credential))
+
+    def upsert_pooled(self, credential: MemoryEnhancementPooledCredential) -> None:
+        require_valid_pooled_credential(credential)
         with _store_lock(self.path):
             payload = self._read_unlocked()
-            providers = payload.setdefault("providers", {})
-            provider_bucket = providers.setdefault(credential.provider_id, {})
-            provider_bucket[credential.name] = credential.to_dict()
-            _set_active_credential_in_payload(payload, credential.provider_id, credential.name)
+            _upsert_pooled_credential_in_payload(payload, credential)
+            _set_active_credential_in_payload(payload, credential.provider_id, credential.id)
             self._write_unlocked(payload)
+
+    def list_pooled_credentials(self, *, provider_id: str = "") -> tuple[MemoryEnhancementPooledCredential, ...]:
+        if provider_id:
+            require_valid_pool_provider_id(provider_id)
+        with _store_lock(self.path):
+            payload = self._read_unlocked()
+        pool = payload.get("credential_pool") if isinstance(payload.get("credential_pool"), Mapping) else {}
+        credentials: list[MemoryEnhancementPooledCredential] = []
+        for current_provider_id in sorted(pool):
+            if provider_id and current_provider_id != provider_id:
+                continue
+            bucket = pool.get(current_provider_id)
+            if not isinstance(bucket, list):
+                continue
+            for raw in bucket:
+                if isinstance(raw, Mapping):
+                    credentials.append(MemoryEnhancementPooledCredential.from_dict(current_provider_id, raw))
+        return tuple(sorted(credentials, key=lambda item: (item.provider_id, item.priority, item.id)))
 
     def list_credentials(self, *, provider_id: str = "") -> tuple[MemoryEnhancementOAuthCredential, ...]:
         if provider_id:
             require_valid_oauth_provider_id(provider_id)
-        with _store_lock(self.path):
-            payload = self._read_unlocked()
-        providers = payload.get("providers") if isinstance(payload.get("providers"), Mapping) else {}
-        credentials: list[MemoryEnhancementOAuthCredential] = []
-        for current_provider_id in sorted(providers):
-            if provider_id and current_provider_id != provider_id:
-                continue
-            bucket = providers.get(current_provider_id)
-            if not isinstance(bucket, Mapping):
-                continue
-            for name in sorted(bucket):
-                raw = bucket.get(name)
-                if isinstance(name, str) and isinstance(raw, Mapping):
-                    credentials.append(MemoryEnhancementOAuthCredential.from_dict(name, raw))
-        return tuple(credentials)
+        return tuple(
+            credential.to_oauth_credential()
+            for credential in self.list_pooled_credentials(provider_id=provider_id)
+            if credential.auth_type == AUTH_TYPE_OAUTH
+        )
 
     def active_name(self, provider_id: str) -> str:
         require_valid_oauth_provider_id(provider_id)
+        with _store_lock(self.path):
+            payload = self._read_unlocked()
+        return _active_credential_name_from_payload(payload, provider_id)
+
+    def active_pooled_name(self, provider_id: str) -> str:
+        require_valid_pool_provider_id(provider_id)
         with _store_lock(self.path):
             payload = self._read_unlocked()
         return _active_credential_name_from_payload(payload, provider_id)
@@ -214,6 +380,16 @@ class MemoryEnhancementOAuthStore:
         with _store_lock(self.path):
             payload = self._read_unlocked()
             credential = _get_credential_from_store_payload(payload, name, provider_id=provider_id)
+            _set_active_credential_in_payload(payload, provider_id, name)
+            self._write_unlocked(payload)
+            return credential
+
+    def set_active_pooled(self, name: str, *, provider_id: str) -> MemoryEnhancementPooledCredential:
+        require_valid_oauth_name(name)
+        require_valid_pool_provider_id(provider_id)
+        with _store_lock(self.path):
+            payload = self._read_unlocked()
+            credential = _get_pooled_credential_from_store_payload(payload, name, provider_id=provider_id)
             _set_active_credential_in_payload(payload, provider_id, name)
             self._write_unlocked(payload)
             return credential
@@ -230,11 +406,29 @@ class MemoryEnhancementOAuthStore:
             return credentials[0]
         raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth active credential unavailable")
 
+    def get_active_pooled(self, provider_id: str) -> MemoryEnhancementPooledCredential:
+        require_valid_pool_provider_id(provider_id)
+        with _store_lock(self.path):
+            payload = self._read_unlocked()
+        active_name = _active_credential_name_from_payload(payload, provider_id)
+        if active_name:
+            return _get_pooled_credential_from_store_payload(payload, active_name, provider_id=provider_id)
+        credentials = self.list_pooled_credentials(provider_id=provider_id)
+        if len(credentials) == 1:
+            return credentials[0]
+        raise MemoryEnhancementCredentialResolutionError("memory enhancement active credential unavailable")
+
     def get(self, name: str, *, provider_id: str = "") -> MemoryEnhancementOAuthCredential:
         require_valid_oauth_name(name)
         with _store_lock(self.path):
             payload = self._read_unlocked()
         return _get_credential_from_store_payload(payload, name, provider_id=provider_id)
+
+    def get_pooled(self, name: str, *, provider_id: str = "") -> MemoryEnhancementPooledCredential:
+        require_valid_oauth_name(name)
+        with _store_lock(self.path):
+            payload = self._read_unlocked()
+        return _get_pooled_credential_from_store_payload(payload, name, provider_id=provider_id)
 
     def get_valid(
         self,
@@ -260,9 +454,11 @@ class MemoryEnhancementOAuthStore:
             refreshed = (refresher or refresh_memory_enhancement_oauth_credential)(credential)
             if refreshed.name != credential.name or refreshed.provider_id != credential.provider_id:
                 raise ProtocolValidationError("memory enhancement oauth refresh returned mismatched credential")
-            providers = payload.setdefault("providers", {})
-            provider_bucket = providers.setdefault(refreshed.provider_id, {})
-            provider_bucket[refreshed.name] = refreshed.to_dict()
+            current = _get_pooled_credential_from_store_payload(payload, credential.name, provider_id=credential.provider_id)
+            _upsert_pooled_credential_in_payload(
+                payload,
+                MemoryEnhancementPooledCredential.from_oauth(refreshed, priority=current.priority),
+            )
             self._write_unlocked(payload)
             return refreshed
 
@@ -290,35 +486,108 @@ def _get_credential_from_store_payload(
     *,
     provider_id: str = "",
 ) -> MemoryEnhancementOAuthCredential:
+    credential = _get_pooled_credential_from_store_payload(
+        payload,
+        name,
+        provider_id=provider_id,
+        auth_type=AUTH_TYPE_OAUTH,
+    )
+    return credential.to_oauth_credential()
+
+
+def _get_pooled_credential_from_store_payload(
+    payload: Mapping[str, Any],
+    name: str,
+    *,
+    provider_id: str = "",
+    auth_type: str = "",
+) -> MemoryEnhancementPooledCredential:
+    if provider_id:
+        require_valid_pool_provider_id(provider_id)
+    if auth_type and auth_type not in POOL_AUTH_TYPES:
+        raise ProtocolValidationError("memory enhancement credential auth type unsupported")
+
+    matches: list[MemoryEnhancementPooledCredential] = []
+    pool = payload.get("credential_pool") if isinstance(payload.get("credential_pool"), Mapping) else {}
+    for current_provider_id, bucket in pool.items():
+        if provider_id and current_provider_id != provider_id:
+            continue
+        if current_provider_id not in POOL_PROVIDER_IDS or not isinstance(bucket, list):
+            continue
+        for raw in bucket:
+            if not isinstance(raw, Mapping):
+                continue
+            credential = MemoryEnhancementPooledCredential.from_dict(current_provider_id, raw)
+            if credential.id == name and (not auth_type or credential.auth_type == auth_type):
+                matches.append(credential)
+
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ProtocolValidationError("memory enhancement credential ref is ambiguous")
+
+    if auth_type and auth_type != AUTH_TYPE_OAUTH:
+        raise MemoryEnhancementCredentialResolutionError("memory enhancement credential unavailable")
+
     providers = payload.get("providers") if isinstance(payload.get("providers"), Mapping) else {}
     if provider_id:
-        require_valid_oauth_provider_id(provider_id)
         raw = providers.get(provider_id, {})
         if isinstance(raw, Mapping) and isinstance(raw.get(name), Mapping):
-            return MemoryEnhancementOAuthCredential.from_dict(name, raw[name])
-        raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth credential unavailable")
+            return MemoryEnhancementPooledCredential.from_oauth(
+                MemoryEnhancementOAuthCredential.from_dict(name, raw[name])
+            )
+        raise MemoryEnhancementCredentialResolutionError("memory enhancement credential unavailable")
 
-    matches: list[MemoryEnhancementOAuthCredential] = []
     for provider_name, bucket in providers.items():
         if not isinstance(provider_name, str) or not isinstance(bucket, Mapping):
             continue
         raw = bucket.get(name)
         if isinstance(raw, Mapping):
-            matches.append(MemoryEnhancementOAuthCredential.from_dict(name, raw))
+            matches.append(
+                MemoryEnhancementPooledCredential.from_oauth(MemoryEnhancementOAuthCredential.from_dict(name, raw))
+            )
     if len(matches) == 1:
         return matches[0]
     if len(matches) > 1:
-        raise ProtocolValidationError("memory enhancement oauth credential ref is ambiguous")
-    raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth credential unavailable")
+        raise ProtocolValidationError("memory enhancement credential ref is ambiguous")
+    raise MemoryEnhancementCredentialResolutionError("memory enhancement credential unavailable")
+
+
+def _upsert_pooled_credential_in_payload(payload: dict[str, Any], credential: MemoryEnhancementPooledCredential) -> None:
+    require_valid_pooled_credential(credential)
+    pool = payload.setdefault("credential_pool", {})
+    if not isinstance(pool, dict):
+        pool = {}
+        payload["credential_pool"] = pool
+    bucket = pool.setdefault(credential.provider_id, [])
+    if not isinstance(bucket, list):
+        bucket = []
+        pool[credential.provider_id] = bucket
+    bucket[:] = [
+        raw
+        for raw in bucket
+        if not (isinstance(raw, Mapping) and str(raw.get("id") or "") == credential.id)
+    ]
+    bucket.append(credential.to_dict())
+
+    if credential.auth_type == AUTH_TYPE_OAUTH:
+        providers = payload.setdefault("providers", {})
+        if not isinstance(providers, dict):
+            providers = {}
+            payload["providers"] = providers
+        provider_bucket = providers.setdefault(credential.provider_id, {})
+        if not isinstance(provider_bucket, dict):
+            provider_bucket = {}
+            providers[credential.provider_id] = provider_bucket
+        provider_bucket[credential.id] = credential.to_oauth_credential().to_dict()
 
 
 def _set_active_credential_in_payload(payload: dict[str, Any], provider_id: str, name: str) -> None:
-    require_valid_oauth_provider_id(provider_id)
+    require_valid_pool_provider_id(provider_id)
     require_valid_oauth_name(name)
-    # Hermes auto-selects from a priority pool. PA uses explicit user
-    # selection, so the per-provider map is the source of truth; active_provider
-    # remains a compatibility hint for consumers that only need the last-touched
-    # provider.
+    # Hermes auto-selects from a priority pool. PA uses explicit user selection,
+    # so the per-provider map is the source of truth; active_provider remains a
+    # compatibility hint for consumers that only need the last-touched provider.
     active_credentials = payload.setdefault("active_credentials", {})
     if not isinstance(active_credentials, dict):
         active_credentials = {}
@@ -328,15 +597,22 @@ def _set_active_credential_in_payload(payload: dict[str, Any], provider_id: str,
 
 
 def _active_credential_name_from_payload(payload: Mapping[str, Any], provider_id: str) -> str:
-    require_valid_oauth_provider_id(provider_id)
+    require_valid_pool_provider_id(provider_id)
     active_credentials = payload.get("active_credentials")
+    valid_names: set[str] = set()
+    pool = payload.get("credential_pool") if isinstance(payload.get("credential_pool"), Mapping) else {}
+    pool_bucket = pool.get(provider_id) if isinstance(pool, Mapping) else []
+    if isinstance(pool_bucket, list):
+        for raw in pool_bucket:
+            if isinstance(raw, Mapping) and isinstance(raw.get("id"), str):
+                valid_names.add(raw["id"])
     providers = payload.get("providers") if isinstance(payload.get("providers"), Mapping) else {}
     provider_bucket = providers.get(provider_id) if isinstance(providers, Mapping) else {}
-    if not isinstance(provider_bucket, Mapping):
-        return ""
+    if isinstance(provider_bucket, Mapping):
+        valid_names.update(name for name in provider_bucket if isinstance(name, str))
     if isinstance(active_credentials, Mapping):
         name = active_credentials.get(provider_id)
-        if isinstance(name, str) and name in provider_bucket:
+        if isinstance(name, str) and name in valid_names:
             return name
     return ""
 
@@ -742,6 +1018,26 @@ def require_valid_oauth_credential(credential: MemoryEnhancementOAuthCredential)
         raise ProtocolValidationError("memory enhancement oauth expiry is invalid")
 
 
+def require_valid_pooled_credential(credential: MemoryEnhancementPooledCredential) -> None:
+    require_valid_oauth_name(credential.id)
+    require_valid_pool_provider_id(credential.provider_id)
+    if credential.auth_type not in POOL_AUTH_TYPES:
+        raise ProtocolValidationError("memory enhancement credential auth type unsupported")
+    if int(credential.priority) < 0:
+        raise ProtocolValidationError("memory enhancement credential priority is invalid")
+    if not credential.source.strip():
+        raise ProtocolValidationError("memory enhancement credential source is required")
+    require_valid_memory_enhancement_credential_value(credential.access_token)
+    if credential.refresh_token:
+        require_valid_memory_enhancement_credential_value(credential.refresh_token)
+    if credential.expires_at_ms is not None and int(credential.expires_at_ms) < 0:
+        raise ProtocolValidationError("memory enhancement credential expiry is invalid")
+    if credential.auth_type == AUTH_TYPE_OAUTH:
+        require_valid_oauth_provider_id(credential.provider_id)
+        if credential.transport not in OAUTH_TRANSPORTS:
+            raise ProtocolValidationError("memory enhancement oauth transport unsupported")
+
+
 def require_valid_oauth_name(name: str) -> None:
     if _OAUTH_NAME_RE.fullmatch(str(name or "")) is None:
         raise ProtocolValidationError("memory enhancement oauth credential name is invalid")
@@ -752,45 +1048,93 @@ def require_valid_oauth_provider_id(provider_id: str) -> None:
         raise ProtocolValidationError("memory enhancement oauth provider unsupported")
 
 
+def require_valid_pool_provider_id(provider_id: str) -> None:
+    if provider_id not in POOL_PROVIDER_IDS:
+        raise ProtocolValidationError("memory enhancement credential provider unsupported")
+
+
 def _empty_store() -> dict[str, Any]:
     return {
         "version": OAUTH_STORE_VERSION,
         "active_provider": "",
         "active_credentials": {},
+        "credential_pool": {},
         "providers": {},
     }
 
 
 def _normalize_store(payload: Mapping[str, Any]) -> dict[str, Any]:
-    providers: dict[str, dict[str, dict[str, Any]]] = {}
+    pool_by_provider: dict[str, dict[str, MemoryEnhancementPooledCredential]] = {}
+    raw_pool = payload.get("credential_pool")
+    if isinstance(raw_pool, Mapping):
+        for provider_id, bucket in raw_pool.items():
+            if provider_id not in POOL_PROVIDER_IDS:
+                continue
+            raw_entries: list[Any]
+            if isinstance(bucket, list):
+                raw_entries = bucket
+            elif isinstance(bucket, Mapping):
+                raw_entries = list(bucket.values())
+            else:
+                continue
+            for raw_credential in raw_entries:
+                if not isinstance(raw_credential, Mapping):
+                    continue
+                credential = MemoryEnhancementPooledCredential.from_dict(provider_id, raw_credential)
+                require_valid_pooled_credential(credential)
+                pool_by_provider.setdefault(provider_id, {})[credential.id] = credential
+
     raw_providers = payload.get("providers")
     if isinstance(raw_providers, Mapping):
         for provider_id, bucket in raw_providers.items():
             if provider_id not in OAUTH_PROVIDER_IDS or not isinstance(bucket, Mapping):
                 continue
-            providers[provider_id] = {}
             for name, raw_credential in bucket.items():
                 if not isinstance(name, str) or not isinstance(raw_credential, Mapping):
                     continue
                 credential = MemoryEnhancementOAuthCredential.from_dict(name, raw_credential)
                 require_valid_oauth_credential(credential)
-                providers[provider_id][name] = credential.to_dict()
+                provider_pool = pool_by_provider.setdefault(provider_id, {})
+                if name not in provider_pool:
+                    provider_pool[name] = MemoryEnhancementPooledCredential.from_oauth(
+                        credential,
+                        priority=len(provider_pool),
+                    )
+
+    credential_pool: dict[str, list[dict[str, Any]]] = {}
+    providers: dict[str, dict[str, dict[str, Any]]] = {}
+    for provider_id in sorted(pool_by_provider):
+        entries = tuple(sorted(pool_by_provider[provider_id].values(), key=lambda item: (item.priority, item.id)))
+        if entries:
+            credential_pool[provider_id] = [entry.to_dict() for entry in entries]
+        for entry in entries:
+            if entry.auth_type == AUTH_TYPE_OAUTH:
+                providers.setdefault(provider_id, {})[entry.id] = entry.to_oauth_credential().to_dict()
+
     active_credentials: dict[str, str] = {}
     raw_active_credentials = payload.get("active_credentials")
     if isinstance(raw_active_credentials, Mapping):
         for provider_id, name in raw_active_credentials.items():
-            if provider_id in providers and isinstance(name, str) and name in providers[provider_id]:
+            if not isinstance(provider_id, str):
+                continue
+            entries = pool_by_provider.get(provider_id, {})
+            if isinstance(name, str) and name in entries:
                 active_credentials[provider_id] = name
 
     raw_active_provider = payload.get("active_provider")
-    active_provider = raw_active_provider if isinstance(raw_active_provider, str) and raw_active_provider in providers else ""
-    if active_provider and active_provider not in active_credentials:
-        active_provider = ""
+    active_provider = (
+        raw_active_provider
+        if isinstance(raw_active_provider, str)
+        and raw_active_provider in POOL_PROVIDER_IDS
+        and raw_active_provider in active_credentials
+        else ""
+    )
 
     return {
         "version": OAUTH_STORE_VERSION,
         "active_provider": active_provider,
         "active_credentials": active_credentials,
+        "credential_pool": credential_pool,
         "providers": providers,
     }
 
