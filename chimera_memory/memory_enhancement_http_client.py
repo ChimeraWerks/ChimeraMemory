@@ -51,6 +51,9 @@ class MemoryEnhancementHttpClient:
             with self._opener(request, timeout=self.timeout_seconds) as response:
                 raw_body = response.read()
         except urllib.error.HTTPError as exc:
+            code = _error_code_from_http_error(exc)
+            if code:
+                raise RuntimeError(f"memory enhancement sidecar rejected request: {code}") from exc
             raise RuntimeError(f"memory enhancement sidecar HTTP {exc.code}") from exc
         except urllib.error.URLError as exc:
             raise RuntimeError("memory enhancement sidecar unavailable") from exc
@@ -110,3 +113,25 @@ def _metadata_from_response(raw_body: bytes) -> Mapping[str, Any]:
     if not isinstance(metadata, dict):
         raise RuntimeError("memory enhancement sidecar metadata missing")
     return metadata
+
+
+def _error_code_from_http_error(exc: urllib.error.HTTPError) -> str:
+    try:
+        raw_body = exc.read()
+    except Exception:
+        return ""
+    return _error_code_from_response_body(raw_body)
+
+
+def _error_code_from_response_body(raw_body: bytes) -> str:
+    try:
+        payload = json.loads(raw_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return ""
+    if not isinstance(payload, Mapping):
+        return ""
+    error = payload.get("error") if isinstance(payload.get("error"), Mapping) else {}
+    code = str(error.get("code") or "").strip().lower()
+    if re.fullmatch(r"[a-z][a-z0-9_]{0,79}", code):
+        return code
+    return ""

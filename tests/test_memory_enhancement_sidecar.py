@@ -134,7 +134,7 @@ def test_http_client_sidecar_auth_failure_is_sanitized() -> None:
         thread.join(timeout=5)
 
     message = str(exc_info.value)
-    assert "401" in message
+    assert "auth_error" in message
     assert "TEST_ONLY_SIDE_TOKEN" not in message
     assert "TEST_ONLY_WRONG_TOKEN" not in message
     assert "captured content" not in message
@@ -186,6 +186,6 @@ def test_provider_sidecar_failure_is_sanitized() -> None:
         thread.join(timeout=5)
 
     message = str(exc_info.value)
-    assert "502" in message
+    assert "auth_error" in message
     assert "raw-token-value" not in message
     assert "captured content" not in message

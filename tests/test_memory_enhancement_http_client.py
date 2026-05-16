@@ -21,6 +21,9 @@ class _FakeResponse:
     def read(self) -> bytes:
         return self._body
 
+    def close(self) -> None:
+        return None
+
 
 class _FakeOpener:
     def __init__(self, payload: object):
@@ -99,6 +102,41 @@ def test_http_client_errors_do_not_echo_token_or_response_body() -> None:
     assert "401" in message
     assert fake_token not in message
     assert "do not echo this body" not in message
+
+
+def test_http_client_preserves_safe_error_code_from_http_error_envelope() -> None:
+    fake_token = "TEST_ONLY_SIDE_TOKEN"
+
+    def opener(_request, *, timeout: int):
+        raise urllib.error.HTTPError(
+            url="http://127.0.0.1:8944/enhance",
+            code=502,
+            msg="bad gateway",
+            hdrs=None,
+            fp=_FakeResponse(
+                {
+                    "schema_version": ENHANCEMENT_SCHEMA_VERSION,
+                    "status": "error",
+                    "metadata": {},
+                    "error": {"code": "rate_limit", "message": "raw provider detail must not escape"},
+                }
+            ),
+        )
+
+    client = MemoryEnhancementHttpClient(
+        "http://127.0.0.1:8944/enhance",
+        bearer_token=fake_token,
+        opener=opener,
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        client.invoke({"request": {"wrapped_content": "captured content"}})
+
+    message = str(exc_info.value)
+    assert "rate_limit" in message
+    assert "raw provider detail" not in message
+    assert "captured content" not in message
+    assert fake_token not in message
 
 
 def test_http_client_rejects_non_ok_response_with_code_only() -> None:
