@@ -152,7 +152,15 @@ class MemoryEnhancementOAuthCredential:
 
 
 class MemoryEnhancementOAuthStore:
-    """Local PA auth store for memory-enhancement OAuth credentials."""
+    """Local auth store for memory-enhancement OAuth credentials.
+
+    This store intentionally stays narrower than Hermes's generic
+    ``PooledCredential`` pool: API-key credentials remain env refs for now, and
+    this file owns only OAuth lifecycle state. We keep Hermes-compatible
+    ``active_provider`` for coarse compatibility, plus a PA-specific
+    ``active_credentials`` map so each provider can remember its selected
+    account independently for explicit hot-swap UX.
+    """
 
     def __init__(self, path: str | Path | None = None, *, repo_root: str | Path | None = None) -> None:
         self.path = resolve_oauth_store_path(path, repo_root=repo_root)
@@ -307,6 +315,10 @@ def _get_credential_from_store_payload(
 def _set_active_credential_in_payload(payload: dict[str, Any], provider_id: str, name: str) -> None:
     require_valid_oauth_provider_id(provider_id)
     require_valid_oauth_name(name)
+    # Hermes auto-selects from a priority pool. PA uses explicit user
+    # selection, so the per-provider map is the source of truth; active_provider
+    # remains a compatibility hint for consumers that only need the last-touched
+    # provider.
     active_credentials = payload.setdefault("active_credentials", {})
     if not isinstance(active_credentials, dict):
         active_credentials = {}
