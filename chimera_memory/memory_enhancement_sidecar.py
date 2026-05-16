@@ -25,7 +25,8 @@ def build_dry_run_sidecar_response(invocation: Mapping[str, Any]) -> dict[str, A
     started = time.perf_counter()
     request_payload = invocation.get("request") if isinstance(invocation.get("request"), Mapping) else {}
     metadata = normalize_memory_enhancement_response(
-        derive_dry_run_metadata({"request_payload": dict(request_payload)})
+        derive_dry_run_metadata({"request_payload": dict(request_payload)}),
+        sensitivity_context=request_payload,
     )
     encoded_metadata = json.dumps(metadata, separators=(",", ":"), sort_keys=True)
     wrapped = str(request_payload.get("wrapped_content") or "")
@@ -55,8 +56,11 @@ def build_provider_sidecar_response(
 ) -> dict[str, Any]:
     """Build a successful real-provider sidecar response."""
     started = time.perf_counter()
-    metadata = normalize_memory_enhancement_response(client.invoke(invocation))
     request_payload = invocation.get("request") if isinstance(invocation.get("request"), Mapping) else {}
+    metadata = normalize_memory_enhancement_response(
+        client.invoke(invocation),
+        sensitivity_context=request_payload,
+    )
     provider = invocation.get("provider") if isinstance(invocation.get("provider"), Mapping) else {}
     encoded_metadata = json.dumps(metadata, separators=(",", ":"), sort_keys=True)
     wrapped = str(request_payload.get("wrapped_content") or "")

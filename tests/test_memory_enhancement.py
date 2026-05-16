@@ -64,6 +64,27 @@ def test_normalize_memory_enhancement_response_enforces_governance_defaults() ->
     assert normalized["requires_user_confirmation"] is True
 
 
+def test_normalize_memory_enhancement_response_forces_restricted_for_credential_metadata() -> None:
+    normalized = normalize_memory_enhancement_response(
+        {
+            "summary": "Credential flow stored OAuth refresh data in the auth store.",
+            "sensitivity_tier": "standard",
+        }
+    )
+
+    assert normalized["sensitivity_tier"] == "restricted"
+
+
+def test_normalize_memory_enhancement_response_forces_restricted_from_source_context() -> None:
+    literal_prefix = "".join(("g", "h", "p", "_"))
+    normalized = normalize_memory_enhancement_response(
+        {"summary": "Model omitted the sensitive source.", "sensitivity_tier": "standard"},
+        sensitivity_context={"wrapped_content": f"Captured value starts with {literal_prefix}TEST_ONLY_VALUE"},
+    )
+
+    assert normalized["sensitivity_tier"] == "restricted"
+
+
 def test_enhancement_metadata_to_frontmatter_outputs_cm_yaml_fields() -> None:
     frontmatter = enhancement_metadata_to_frontmatter(
         {

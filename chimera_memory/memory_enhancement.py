@@ -43,6 +43,38 @@ MAX_FIELD_CHARS = 240
 MAX_LIST_ITEMS = 25
 
 _WHITESPACE_RE = re.compile(r"\s+")
+_SECRET_LITERAL_PREFIXES = tuple(
+    "".join(parts)
+    for parts in (
+        ("s", "k", "-", "a", "n", "t", "-"),
+        ("M", "T", "Q"),
+        ("h", "t", "t", "p", "s", ":", "/", "/", "d", "i", "s", "c", "o", "r", "d", ".", "c", "o", "m", "/", "a", "p", "i", "/", "w", "e", "b", "h", "o", "o", "k", "s", "/"),
+        ("g", "h", "p", "_"),
+        ("g", "h", "o", "_"),
+        ("g", "h", "s", "_"),
+        ("g", "h", "r", "_"),
+        ("A", "K", "I", "A"),
+        ("A", "S", "I", "A"),
+    )
+)
+_RESTRICTED_SENSITIVITY_RE = re.compile(
+    r"\b("
+    r"oauth|"
+    r"refresh[-_\s]?token|"
+    r"access[-_\s]?token|"
+    r"api[-_\s]?key|"
+    r"client[-_\s]?secret|"
+    r"secret|"
+    r"password|"
+    r"bearer|"
+    r"webhook|"
+    r"private[-_\s]?key|"
+    r"auth[-_\s]?store|"
+    r"credential(?:s|[-_\s]?flow)?|"
+    r"token[-_\s]?rotation"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def _clean_text(value: Any, *, max_chars: int = MAX_FIELD_CHARS) -> str:
@@ -155,7 +187,11 @@ def build_memory_enhancement_request(
     }
 
 
-def normalize_memory_enhancement_response(payload: Mapping[str, Any]) -> dict[str, Any]:
+def normalize_memory_enhancement_response(
+    payload: Mapping[str, Any],
+    *,
+    sensitivity_context: Any = None,
+) -> dict[str, Any]:
     """Normalize sidecar output into governance-safe metadata."""
     raw_type = _clean_text(payload.get("memory_type") or payload.get("type"))
     memory_type = raw_type if raw_type in ALLOWED_MEMORY_TYPES else ""
@@ -163,6 +199,8 @@ def normalize_memory_enhancement_response(payload: Mapping[str, Any]) -> dict[st
     sensitivity_tier = (
         raw_sensitivity if raw_sensitivity in ALLOWED_SENSITIVITY_TIERS else "standard"
     )
+    if _contains_restricted_sensitivity_signal(payload, sensitivity_context):
+        sensitivity_tier = "restricted"
 
     return {
         "memory_type": memory_type,
@@ -181,6 +219,32 @@ def normalize_memory_enhancement_response(payload: Mapping[str, Any]) -> dict[st
         "can_use_as_evidence": True,
         "requires_user_confirmation": True,
     }
+
+
+def _contains_restricted_sensitivity_signal(*values: Any) -> bool:
+    for text in _iter_sensitivity_text(values):
+        if any(prefix in text for prefix in _SECRET_LITERAL_PREFIXES):
+            return True
+        if _RESTRICTED_SENSITIVITY_RE.search(text):
+            return True
+    return False
+
+
+def _iter_sensitivity_text(values: Any) -> list[str]:
+    found: list[str] = []
+    stack = [values]
+    while stack:
+        value = stack.pop()
+        if value is None:
+            continue
+        if isinstance(value, Mapping):
+            stack.extend(value.keys())
+            stack.extend(value.values())
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            stack.extend(value)
+        else:
+            found.append(str(value))
+    return found
 
 
 def enhancement_metadata_to_frontmatter(metadata: Mapping[str, Any]) -> dict[str, Any]:

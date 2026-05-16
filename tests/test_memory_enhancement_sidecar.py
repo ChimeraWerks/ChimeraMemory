@@ -87,6 +87,33 @@ def test_provider_sidecar_response_uses_injected_client() -> None:
     assert client.invocations == [invocation]
 
 
+def test_provider_sidecar_response_uses_request_context_for_sensitivity_override() -> None:
+    client = FakeProviderClient(
+        response={
+            "summary": "Provider omitted the sensitive source.",
+            "sensitivity_tier": "standard",
+        }
+    )
+    invocation = {
+        "request_id": "request-1",
+        "provider": {"provider_id": "openai", "model": "gpt-4o-mini"},
+        "request": {
+            "wrapped_content": "\n".join(
+                [
+                    "----- BEGIN UNTRUSTED MEMORY CONTENT -----",
+                    "The captured note mentions an API key rotation.",
+                    "----- END UNTRUSTED MEMORY CONTENT -----",
+                ]
+            )
+        },
+    }
+
+    response = build_provider_sidecar_response(invocation, client)
+
+    assert response["metadata"]["summary"] == "Provider omitted the sensitive source."
+    assert response["metadata"]["sensitivity_tier"] == "restricted"
+
+
 def test_http_client_can_call_dry_run_sidecar() -> None:
     fake_token = "TEST_ONLY_SIDE_TOKEN"
     server = create_dry_run_sidecar_server("127.0.0.1", 0, bearer_token=fake_token)
