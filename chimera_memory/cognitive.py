@@ -200,6 +200,11 @@ WEIGHT_RECENCY = 0.15
 WEIGHT_CONTEXT = 0.20
 WEIGHT_SPEC = 0.15
 WEIGHT_FAILURE = 0.25
+REVIEW_STATUS_SCORE_ADJUSTMENT = {
+    "confirmed": 0.15,
+    "evidence_only": 0.05,
+    "pending": -0.08,
+}
 
 
 def compute_zone_score(
@@ -207,12 +212,13 @@ def compute_zone_score(
     access_count: int | None,
     days_since_access: float,
     failure_count: int | None,
+    review_status: str | None = None,
 ) -> float:
     """Compute a memory's zone score (0.0 to 1.0).
 
     Score = (confidence * 0.25) + (frequency * 0.20) + (recency * 0.15)
             + (context_match * 0.20) + (spec_alignment * 0.15)
-            - (failure_penalty * 0.25)
+            + review_status_adjustment - (failure_penalty * 0.25)
 
     Context_match and spec_alignment are set to 0.5 (neutral) when not
     evaluating against a specific context. They become meaningful when
@@ -234,6 +240,7 @@ def compute_zone_score(
 
     # Failure penalty
     failure_penalty = min(1.0, (failure_count or 0) / 5.0)
+    review_adjustment = REVIEW_STATUS_SCORE_ADJUSTMENT.get(str(review_status or "").strip(), 0.0)
 
     score = (
         confidence * WEIGHT_CONFIDENCE
@@ -241,6 +248,7 @@ def compute_zone_score(
         + recency * WEIGHT_RECENCY
         + context_match * WEIGHT_CONTEXT
         + spec_alignment * WEIGHT_SPEC
+        + review_adjustment
         - failure_penalty * WEIGHT_FAILURE
     )
 
@@ -268,7 +276,7 @@ def compute_all_zones(conn: sqlite3.Connection, persona: Optional[str] = None) -
     rows = conn.execute(f"""
         SELECT id, relative_path, persona, fm_type, fm_importance,
                fm_last_accessed, fm_created, fm_access_count, fm_status,
-               fm_about, fm_failure_count
+               fm_about, fm_failure_count, fm_review_status
         FROM memory_files {where}
     """, params).fetchall()
 
@@ -281,7 +289,7 @@ def compute_all_zones(conn: sqlite3.Connection, persona: Optional[str] = None) -
             continue
 
         days_since = _days_since(r[5], r[6], now)
-        score = compute_zone_score(importance, r[7], days_since, r[10])
+        score = compute_zone_score(importance, r[7], days_since, r[10], r[11])
         zone = assign_zone(score)
         zone_counts[zone] += 1
 
@@ -293,6 +301,7 @@ def compute_all_zones(conn: sqlite3.Connection, persona: Optional[str] = None) -
             "access_count": r[7],
             "days_since_access": round(days_since, 1),
             "failure_count": r[10] or 0,
+            "review_status": r[11],
             "score": score,
             "zone": zone,
             "about": r[9],

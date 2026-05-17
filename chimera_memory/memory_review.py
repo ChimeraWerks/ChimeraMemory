@@ -9,9 +9,11 @@ from .memory_observability import _json_text, record_memory_audit_event
 
 REVIEW_ACTIONS = {
     "confirm",
+    "edit",
     "evidence_only",
     "restrict_scope",
     "mark_stale",
+    "merge",
     "reject",
     "dispute",
     "supersede",
@@ -68,6 +70,13 @@ def _review_updates_for_action(action: str) -> dict[str, object]:
             "fm_can_use_as_evidence": 1,
             "fm_requires_user_confirmation": 0,
         }
+    if action == "edit":
+        return {
+            "fm_review_status": "pending",
+            "fm_can_use_as_instruction": 0,
+            "fm_can_use_as_evidence": 1,
+            "fm_requires_user_confirmation": 1,
+        }
     if action == "restrict_scope":
         return {
             "fm_review_status": "restricted",
@@ -80,6 +89,13 @@ def _review_updates_for_action(action: str) -> dict[str, object]:
             "fm_status": "stale",
             "fm_lifecycle_status": "stale",
             "fm_review_status": "stale",
+            "fm_can_use_as_instruction": 0,
+            "fm_requires_user_confirmation": 0,
+        }
+    if action == "merge":
+        return {
+            "fm_lifecycle_status": "superseded",
+            "fm_review_status": "merged",
             "fm_can_use_as_instruction": 0,
             "fm_requires_user_confirmation": 0,
         }
@@ -214,9 +230,11 @@ def memory_review_action(
 
     event_type = {
         "confirm": "memory_confirmed",
+        "edit": "memory_review_edit_requested",
         "evidence_only": "memory_evidence_only",
         "restrict_scope": "memory_restricted",
         "mark_stale": "memory_marked_stale",
+        "merge": "memory_merged",
         "reject": "memory_rejected",
         "dispute": "memory_disputed",
         "supersede": "memory_superseded",

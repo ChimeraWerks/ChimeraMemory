@@ -10,7 +10,7 @@ PROVENANCE_STATUSES = {
 LIFECYCLE_STATUSES = {"active", "stale", "archived", "superseded", "disputed", "rejected"}
 REVIEW_STATUSES = {
     "pending", "confirmed", "evidence_only", "restricted",
-    "rejected", "stale", "merged",
+    "rejected", "stale", "merged", "superseded", "disputed",
 }
 SENSITIVITY_TIERS = {"standard", "restricted", "unknown"}
 INSTRUCTION_GRADE_PROVENANCE = {"user_confirmed", "imported"}

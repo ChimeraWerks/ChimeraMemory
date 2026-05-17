@@ -81,6 +81,28 @@ ALLOWED_PROVENANCE_STATUSES = {
     "disputed",
 }
 INSTRUCTION_GRADE_PROVENANCE = {"user_confirmed", "imported"}
+AUTHORED_REVIEW_STATUSES = {
+    "pending",
+    "confirmed",
+    "evidence_only",
+    "restricted",
+    "rejected",
+    "stale",
+    "merged",
+    "superseded",
+    "disputed",
+}
+AUTHORED_REVIEW_ACTIONS = {
+    "confirm",
+    "edit",
+    "evidence_only",
+    "restrict_scope",
+    "mark_stale",
+    "merge",
+    "reject",
+    "dispute",
+    "supersede",
+}
 ENTITY_CONFIDENCE_THRESHOLD = 0.5
 
 MAX_FIELD_CHARS = 240
@@ -226,7 +248,7 @@ _AUTHORED_STRUCTURED_FIELD_KEYS = {
     "unresolved_questions": ("question", "why", "owner"),
     "next_steps": ("action", "owner", "due-when"),
     "failures": ("what-failed", "why", "recovery"),
-    "artifacts": ("kind", "ref", "note"),
+    "artifacts": ("kind", "uri", "description"),
     "action_items": ("action",),
 }
 _AUTHORED_PRIMARY_ITEM_KEYS = {
@@ -237,10 +259,11 @@ _AUTHORED_PRIMARY_ITEM_KEYS = {
     "unresolved_questions": "question",
     "next_steps": "action",
     "failures": "what-failed",
-    "artifacts": "ref",
+    "artifacts": "uri",
     "action_items": "action",
 }
 _AUTHORED_TOP_LEVEL_ALIASES = {
+    "schema_version": "payload_schema_version",
     "memory_id": "memory_id",
     "memory_type": "memory_type",
     "importance": "importance",
@@ -262,15 +285,22 @@ _AUTHORED_TOP_LEVEL_ALIASES = {
     "artifacts": "artifacts",
     "action_items": "action_items",
     "entities": "entities",
+    "source_refs": "source_refs",
+    "models_used": "models_used",
+    "provenance": "provenance",
+    "retention": "retention",
+    "review_status": "review_status",
 }
 _AUTHORED_NESTED_KEY_ALIASES = {
     "source_incident": "source-incident",
     "applies_to": "applies-to",
     "due_when": "due-when",
     "what_failed": "what-failed",
-    "uri": "ref",
-    "description": "note",
+    "ref": "uri",
+    "note": "description",
 }
+_AUTHORED_SOURCE_REF_KEYS = ("kind", "uri", "title", "timestamp")
+_AUTHORED_MODEL_AUDIT_KEYS = ("provider", "model", "role")
 _MEMORY_TYPE_ALIASES = {
     "episode": "episodic",
     "episodes": "episodic",
@@ -671,7 +701,7 @@ def _clean_authored_item(value: Any, *, field: str) -> dict[str, Any]:
             key = _AUTHORED_NESTED_KEY_ALIASES.get(key, key.replace("_", "-"))
             if key not in allowed_keys:
                 continue
-            max_chars = MAX_REF_CHARS if key == "ref" else MAX_FIELD_CHARS
+            max_chars = MAX_REF_CHARS if key == "uri" else MAX_FIELD_CHARS
             text = _clean_text(raw_value, max_chars=max_chars)
             if text:
                 normalized[key] = text
@@ -726,6 +756,84 @@ def _clean_authored_entities_mapping(value: Any) -> dict[str, list[str]]:
     return payload
 
 
+def _clean_record_list(
+    value: Any,
+    *,
+    keys: Sequence[str],
+    max_items: int = MAX_LIST_ITEMS,
+) -> list[dict[str, str]]:
+    if value is None:
+        return []
+    raw_items: Sequence[Any]
+    if isinstance(value, Mapping) or not _is_sequence(value):
+        raw_items = [value]
+    else:
+        raw_items = value
+
+    cleaned: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if not isinstance(item, Mapping):
+            continue
+        row: dict[str, str] = {}
+        for raw_key, raw_value in item.items():
+            key = _AUTHORED_NESTED_KEY_ALIASES.get(_lookup_key(raw_key), _lookup_key(raw_key))
+            if key not in keys:
+                continue
+            max_chars = MAX_REF_CHARS if key == "uri" else MAX_FIELD_CHARS
+            text = _clean_text(raw_value, max_chars=max_chars)
+            if text:
+                row[key] = text
+        if not row:
+            continue
+        dedupe_key = _label_key("|".join(f"{key}:{row.get(key, '')}" for key in keys))
+        if dedupe_key in seen:
+            continue
+        cleaned.append(row)
+        seen.add(dedupe_key)
+        if len(cleaned) >= max_items:
+            break
+    return cleaned
+
+
+def _clean_retention_policy(value: Any) -> dict[str, int | None]:
+    if not isinstance(value, Mapping):
+        return {}
+    cleaned: dict[str, int | None] = {}
+    for raw_key in ("ttl_days", "stale_after_days"):
+        key = _lookup_key(raw_key)
+        if raw_key not in value:
+            continue
+        raw_value = value.get(raw_key)
+        if raw_value in (None, ""):
+            cleaned[key] = None
+            continue
+        try:
+            days = int(raw_value)
+        except (TypeError, ValueError):
+            continue
+        cleaned[key] = max(0, days)
+    return cleaned
+
+
+def _clean_authored_provenance(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    cleaned: dict[str, Any] = {}
+    status = _clean_text(value.get("default_status") or value.get("status"))
+    if status in ALLOWED_PROVENANCE_STATUSES:
+        cleaned["default_status"] = status
+    confidence = _optional_confidence(value.get("confidence"))
+    if confidence is not None:
+        cleaned["confidence"] = confidence
+    requires_review = value.get("requires_review")
+    if isinstance(requires_review, bool):
+        cleaned["requires_review"] = requires_review
+    elif requires_review is not None:
+        cleaned["requires_review"] = str(requires_review).strip().lower() not in {"0", "false", "no", "off"}
+    return cleaned
+
+
 def _authored_memory_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     raw = payload.get("memory_payload") if isinstance(payload.get("memory_payload"), Mapping) else payload
     if not isinstance(raw, Mapping):
@@ -742,6 +850,26 @@ def _authored_memory_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
             entities = _clean_authored_entities_mapping(value)
             if entities:
                 cleaned[field] = entities
+        elif field == "source_refs":
+            rows = _clean_record_list(value, keys=_AUTHORED_SOURCE_REF_KEYS)
+            if rows:
+                cleaned[field] = rows
+        elif field == "models_used":
+            rows = _clean_record_list(value, keys=_AUTHORED_MODEL_AUDIT_KEYS)
+            if rows:
+                cleaned[field] = rows
+        elif field == "provenance":
+            provenance = _clean_authored_provenance(value)
+            if provenance:
+                cleaned[field] = provenance
+        elif field == "retention":
+            retention = _clean_retention_policy(value)
+            if retention:
+                cleaned[field] = retention
+        elif field == "review_status":
+            review_status = _clean_text(value)
+            if review_status in AUTHORED_REVIEW_STATUSES:
+                cleaned[field] = review_status
         elif field == "importance":
             try:
                 importance = int(value)
@@ -782,7 +910,7 @@ def _authored_memory_rows(memory_payload: Mapping[str, Any]) -> list[dict[str, s
 def _authored_item_content(field: str, item: Mapping[str, Any]) -> str:
     parts: list[str] = []
     for key in _AUTHORED_STRUCTURED_FIELD_KEYS.get(field, ()):
-        value = _clean_text(item.get(key), max_chars=MAX_REF_CHARS if key == "ref" else MAX_FIELD_CHARS)
+        value = _clean_text(item.get(key), max_chars=MAX_REF_CHARS if key == "uri" else MAX_FIELD_CHARS)
         if value:
             parts.append(f"{key}: {value}")
     if not parts:
@@ -881,7 +1009,12 @@ def _merge_entities(
 
 
 def _provenance_policy(payload: Mapping[str, Any]) -> dict[str, Any]:
-    provenance = payload.get("provenance") if isinstance(payload.get("provenance"), Mapping) else {}
+    memory_payload = _authored_memory_payload(payload)
+    payload_provenance = payload.get("provenance") if isinstance(payload.get("provenance"), Mapping) else {}
+    memory_provenance = (
+        memory_payload.get("provenance") if isinstance(memory_payload.get("provenance"), Mapping) else {}
+    )
+    provenance = {**memory_provenance, **payload_provenance}
     status = _clean_text(
         payload.get("provenance_status")
         or provenance.get("default_status")
@@ -893,19 +1026,32 @@ def _provenance_policy(payload: Mapping[str, Any]) -> dict[str, Any]:
     confidence = _optional_confidence(payload.get("confidence"))
     if confidence is None:
         confidence = _optional_confidence(provenance.get("confidence"))
+    raw_review_status = _clean_text(
+        payload.get("review_status")
+        or memory_payload.get("review_status")
+        or provenance.get("review_status")
+    )
+    review_status = raw_review_status if raw_review_status in AUTHORED_REVIEW_STATUSES else ""
     requires_review = provenance.get("requires_review", payload.get("requires_user_confirmation"))
-    requires_user_confirmation = True
     if isinstance(requires_review, bool):
         requires_user_confirmation = requires_review
     elif requires_review is not None:
         requires_user_confirmation = str(requires_review).strip().lower() not in {"0", "false", "no", "off"}
+    elif review_status and review_status != "pending":
+        requires_user_confirmation = False
     else:
         requires_user_confirmation = status not in INSTRUCTION_GRADE_PROVENANCE
-    can_use_as_instruction = status in INSTRUCTION_GRADE_PROVENANCE and not requires_user_confirmation
+    if not review_status:
+        review_status = "confirmed" if status in INSTRUCTION_GRADE_PROVENANCE and not requires_user_confirmation else "pending"
+    can_use_as_instruction = (
+        status in INSTRUCTION_GRADE_PROVENANCE
+        and review_status == "confirmed"
+        and not requires_user_confirmation
+    )
     return {
         "provenance_status": status,
         "confidence": confidence,
-        "review_status": "confirmed" if can_use_as_instruction else "pending",
+        "review_status": review_status,
         "can_use_as_instruction": can_use_as_instruction,
         "can_use_as_evidence": True,
         "requires_user_confirmation": requires_user_confirmation,
@@ -927,6 +1073,10 @@ def build_authored_memory_enrichment_request(
         raise ValueError("authored memory payload requires at least one structured field")
     enrichment_text = _authored_enrichment_text(safe_payload, rows)
     memory_type = _memory_type_from_rows(rows, safe_payload.get("memory_type"))
+    safe_provenance = {
+        **_clean_authored_provenance(safe_payload.get("provenance")),
+        **_clean_authored_provenance(provenance),
+    }
     return {
         "schema_version": AUTHORED_WRITEBACK_SCHEMA_VERSION,
         "request_id": request_id or str(uuid.uuid4()),
@@ -934,12 +1084,18 @@ def build_authored_memory_enrichment_request(
         "persona": _clean_text(persona, max_chars=120),
         "source_ref": _clean_text(source_ref, max_chars=500),
         "memory_payload": safe_payload,
-        "provenance": _clean_mapping(provenance),
+        "source_refs": safe_payload.get("source_refs") or [],
+        "models_used": safe_payload.get("models_used") or [],
+        "retention": safe_payload.get("retention") or {},
+        "review_status": safe_payload.get("review_status") or "",
+        "provenance": safe_provenance,
         "contract": {
+            "payload_schema_version": safe_payload.get("payload_schema_version") or "",
             "memory_type": memory_type,
             "summary": _authored_summary({"memory_payload": safe_payload}, rows),
             "action_items": _authored_action_items(safe_payload),
             "structured_field_count": len(rows),
+            "review_actions_supported": sorted(AUTHORED_REVIEW_ACTIONS),
         },
         "policy": {
             "content_is_untrusted": True,
@@ -1003,9 +1159,13 @@ def normalize_authored_memory_writeback(
 
     return {
         "schema_version": AUTHORED_WRITEBACK_SCHEMA_VERSION,
+        "payload_schema_version": memory_payload.get("payload_schema_version") or explicit_contract.get("payload_schema_version") or "",
         "memory_type": memory_type,
         "summary": _authored_summary(payload, rows),
         "authored_rows": rows,
+        "source_refs": payload.get("source_refs") if isinstance(payload.get("source_refs"), list) else memory_payload.get("source_refs", []),
+        "models_used": payload.get("models_used") if isinstance(payload.get("models_used"), list) else memory_payload.get("models_used", []),
+        "retention": payload.get("retention") if isinstance(payload.get("retention"), Mapping) else memory_payload.get("retention", {}),
         "entities": entities,
         "topics": projected["topics"],
         "people": projected["people"],
@@ -1022,6 +1182,7 @@ def normalize_authored_memory_writeback(
         "can_use_as_instruction": policy["can_use_as_instruction"],
         "can_use_as_evidence": policy["can_use_as_evidence"],
         "requires_user_confirmation": policy["requires_user_confirmation"],
+        "review_actions_supported": sorted(AUTHORED_REVIEW_ACTIONS),
         "enrichment_status": "complete" if enrichment_payload else "not_requested",
     }
 

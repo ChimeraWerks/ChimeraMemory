@@ -109,6 +109,43 @@ def test_restrict_scope_keeps_memory_evidence_only_and_out_of_pending_queue(tmp_
     assert len(events) == 1
 
 
+def test_merge_review_action_matches_ob_lifecycle(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+    _index_generated_memory(conn, tmp_path, "merged.md")
+
+    result = memory_review_action(
+        conn,
+        file_path="merged.md",
+        action="merge",
+        reviewer="charles",
+        notes="merged into canonical memory",
+    )
+
+    assert result["ok"] is True
+    assert result["after"]["lifecycle_status"] == "superseded"
+    assert result["after"]["review_status"] == "merged"
+    assert result["after"]["can_use_as_instruction"] is False
+    assert result["after"]["requires_user_confirmation"] is False
+    events = memory_audit_query(conn, event_type="memory_merged", persona="asa")
+    assert len(events) == 1
+
+
+def test_edit_review_action_keeps_memory_pending(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+    _index_generated_memory(conn, tmp_path, "edit.md")
+
+    result = memory_review_action(conn, file_path="edit.md", action="edit", reviewer="charles")
+
+    assert result["ok"] is True
+    assert result["after"]["review_status"] == "pending"
+    assert result["after"]["requires_user_confirmation"] is True
+    assert result["after"]["can_use_as_instruction"] is False
+    events = memory_audit_query(conn, event_type="memory_review_edit_requested", persona="asa")
+    assert len(events) == 1
+
+
 def test_review_action_reports_missing_file(tmp_path: Path) -> None:
     conn = sqlite3.connect(":memory:")
     init_memory_tables(conn)

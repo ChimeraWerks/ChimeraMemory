@@ -141,6 +141,7 @@ def test_normalize_memory_enhancement_response_forces_restricted_from_source_con
 def test_build_authored_memory_enrichment_request_keeps_llm_scope_narrow() -> None:
     request = build_authored_memory_enrichment_request(
         memory_payload={
+            "schema_version": 2,
             "memory_type": "episode",
             "lessons": [
                 {
@@ -150,11 +151,23 @@ def test_build_authored_memory_enrichment_request_keeps_llm_scope_narrow() -> No
                 }
             ],
             "next_steps": [{"action": "Check each wire-level axis independently", "owner": "asa"}],
+            "outputs": ["CM authored writeback primitive"],
+            "unresolved_questions": ["How should slice 4 grade enrichment?"],
             "body": "The caller writes memory; the LLM only enriches metadata.",
             "entities": {
                 "topics": ["memory enhancement", "not-in-enum"],
                 "projects": ["ChimeraMemory"],
             },
+            "source_refs": [
+                {
+                    "kind": "git-commit",
+                    "uri": "b783f83",
+                    "title": "authored writeback baseline",
+                    "timestamp": "2026-05-17T03:20:00Z",
+                }
+            ],
+            "models_used": [{"provider": "kobold", "model": "qwen3-local", "role": "enrichment"}],
+            "retention": {"ttl_days": None, "stale_after_days": 90},
         },
         persona="developer/asa",
         source_ref="day61/structured-writeback",
@@ -163,8 +176,20 @@ def test_build_authored_memory_enrichment_request_keeps_llm_scope_narrow() -> No
 
     assert request["schema_version"] == AUTHORED_WRITEBACK_SCHEMA_VERSION
     assert request["task"] == "enrich_authored_memory_payload"
+    assert request["contract"]["payload_schema_version"] == "2"
     assert request["contract"]["memory_type"] == "episodic"
     assert request["contract"]["action_items"] == ["Check each wire-level axis independently"]
+    assert set(request["contract"]["review_actions_supported"]) == {
+        "confirm",
+        "edit",
+        "evidence_only",
+        "restrict_scope",
+        "mark_stale",
+        "merge",
+        "reject",
+        "dispute",
+        "supersede",
+    }
     assert request["expected_fields"] == ["entities", "topics", "dates", "confidence", "sensitivity_tier"]
     assert "summary" in request["policy"]["authoritative_fields"]
     assert "action_items" in request["policy"]["authoritative_fields"]
@@ -176,6 +201,9 @@ def test_build_authored_memory_enrichment_request_keeps_llm_scope_narrow() -> No
         "sensitivity_tier",
     ]
     assert request["memory_payload"]["entities"]["topics"] == ["memory-enhancement"]
+    assert request["source_refs"][0]["uri"] == "b783f83"
+    assert request["models_used"][0]["role"] == "enrichment"
+    assert request["retention"] == {"ttl_days": None, "stale_after_days": 90}
     assert "body: The caller writes memory" in request["wrapped_content"]
     assert "memory-enhancement" in request["topic_enum"]
 
@@ -195,11 +223,16 @@ def test_build_authored_memory_enrichment_request_requires_structured_field() ->
 def test_normalize_authored_memory_writeback_ignores_model_authoritative_fields() -> None:
     request = build_authored_memory_enrichment_request(
         memory_payload={
+            "schema_version": 2,
             "memory_type": "procedural",
             "summary": "OB pattern adapted for CM.",
             "lessons": [{"teaching": "Caller-authored memory is authoritative."}],
             "next_steps": [{"action": "Preserve structured writeback discipline"}],
+            "artifacts": [{"kind": "commit", "uri": "b783f83", "description": "baseline commit"}],
             "entities": {"topics": ["writeback discipline"], "projects": ["ChimeraMemory"]},
+            "source_refs": [{"kind": "discord-msg", "uri": "1505407087101083749"}],
+            "models_used": [{"provider": "openai", "model": "gpt-5.4", "role": "caller-assist"}],
+            "retention": {"stale_after_days": 30},
         },
         persona="developer/asa",
         provenance={"status": "generated"},
@@ -220,12 +253,16 @@ def test_normalize_authored_memory_writeback_ignores_model_authoritative_fields(
     )
 
     assert normalized["memory_type"] == "procedural"
+    assert normalized["payload_schema_version"] == "2"
     assert normalized["summary"] == "OB pattern adapted for CM."
     assert normalized["action_items"] == ["Preserve structured writeback discipline"]
     assert normalized["topics"] == ["writeback-discipline", "memory-enhancement"]
     assert normalized["people"] == ["Charles"]
     assert normalized["projects"] == ["ChimeraMemory"]
     assert normalized["sensitivity_tier"] == "restricted"
+    assert normalized["source_refs"] == [{"kind": "discord-msg", "uri": "1505407087101083749"}]
+    assert normalized["models_used"] == [{"provider": "openai", "model": "gpt-5.4", "role": "caller-assist"}]
+    assert normalized["retention"] == {"stale_after_days": 30}
     assert normalized["review_status"] == "pending"
     assert normalized["can_use_as_instruction"] is False
 
