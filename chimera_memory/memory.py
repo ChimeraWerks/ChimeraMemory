@@ -600,6 +600,73 @@ def memory_stats(conn: sqlite3.Connection, persona: Optional[str] = None) -> dic
     }
 
 
+def memory_content_duplicate_groups(
+    conn: sqlite3.Connection,
+    *,
+    persona: Optional[str] = None,
+    limit: int = 20,
+    min_count: int = 2,
+) -> list[dict]:
+    """Find normalized-content duplicate groups without merging provenance."""
+    conditions = ["content_fingerprint IS NOT NULL", "content_fingerprint <> ''"]
+    params: list[object] = []
+    if persona:
+        conditions.append("persona = ?")
+        params.append(persona)
+    where = " AND ".join(conditions)
+    group_rows = conn.execute(
+        f"""
+        SELECT content_fingerprint, COUNT(*) AS duplicate_count
+        FROM memory_files
+        WHERE {where}
+        GROUP BY content_fingerprint
+        HAVING COUNT(*) >= ?
+        ORDER BY duplicate_count DESC, content_fingerprint ASC
+        LIMIT ?
+        """,
+        [*params, max(2, int(min_count)), max(0, min(int(limit), 200))],
+    ).fetchall()
+    groups: list[dict] = []
+    for fingerprint, duplicate_count in group_rows:
+        file_conditions = ["content_fingerprint = ?"]
+        file_params: list[object] = [fingerprint]
+        if persona:
+            file_conditions.append("persona = ?")
+            file_params.append(persona)
+        file_where = " AND ".join(file_conditions)
+        file_rows = conn.execute(
+            f"""
+            SELECT id, path, persona, relative_path, fm_type, fm_about,
+                   fm_review_status, fm_provenance_status, indexed_at
+            FROM memory_files
+            WHERE {file_where}
+            ORDER BY persona ASC, relative_path ASC, path ASC
+            """,
+            file_params,
+        ).fetchall()
+        groups.append(
+            {
+                "content_fingerprint": fingerprint,
+                "duplicate_count": duplicate_count,
+                "files": [
+                    {
+                        "id": row[0],
+                        "path": row[1],
+                        "persona": row[2],
+                        "relative_path": row[3],
+                        "type": row[4],
+                        "about": row[5],
+                        "review_status": row[6],
+                        "provenance_status": row[7],
+                        "indexed_at": row[8],
+                    }
+                    for row in file_rows
+                ],
+            }
+        )
+    return groups
+
+
 def memory_gaps(conn: sqlite3.Connection, persona: Optional[str] = None) -> dict:
     """Detect knowledge gaps using graph analysis."""
     try:

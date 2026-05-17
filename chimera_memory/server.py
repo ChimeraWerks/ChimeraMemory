@@ -1640,6 +1640,37 @@ def create_server():
         return "\n".join(lines)
 
     @server.tool()
+    def memory_content_duplicates(
+        persona: str = "",
+        limit: int = 20,
+        min_count: int = 2,
+    ) -> str:
+        """Find duplicate normalized memory content without merging rows."""
+        _ensure_memory_indexed()
+        from .memory import memory_content_duplicate_groups
+
+        groups = memory_content_duplicate_groups(
+            _get_memory_conn(),
+            persona=persona or None,
+            limit=limit,
+            min_count=min_count,
+        )
+        if not groups:
+            return "No duplicate content fingerprints found."
+        lines = ["Duplicate content fingerprints:"]
+        for group in groups:
+            lines.append(
+                f"- {group['content_fingerprint'][:12]}... "
+                f"count={group['duplicate_count']}"
+            )
+            for item in group["files"][:10]:
+                lines.append(
+                    f"  - {item['persona']}:{item['relative_path']} "
+                    f"({item.get('type') or 'unknown'})"
+                )
+        return "\n".join(lines)
+
+    @server.tool()
     def memory_live_retrieval_check(
         current_context: str,
         previous_context: str = "",

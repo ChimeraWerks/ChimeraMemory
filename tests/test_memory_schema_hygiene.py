@@ -5,6 +5,7 @@ from pathlib import Path
 from chimera_memory.memory import (
     index_file,
     init_memory_tables,
+    memory_content_duplicate_groups,
     normalized_content_fingerprint,
 )
 
@@ -185,3 +186,9 @@ def test_idempotency_key_is_partial_unique_and_content_fingerprint_accepts_dupli
 
     count = conn.execute("SELECT COUNT(*) FROM memory_files").fetchone()[0]
     assert count == 4
+
+    groups = memory_content_duplicate_groups(conn, persona="asa")
+    assert len(groups) == 1
+    assert groups[0]["content_fingerprint"] == "fingerprint-1"
+    assert groups[0]["duplicate_count"] == 2
+    assert [item["relative_path"] for item in groups[0]["files"]] == ["a.md", "c.md"]
