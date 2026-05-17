@@ -191,6 +191,9 @@ Runtime guards now enforce both process and batch boundaries:
 - `CHIMERA_MEMORY_ENHANCEMENT_MAX_CALLS` is a process-local hard LLM call cap.
 - `CHIMERA_MEMORY_ENHANCEMENT_MAX_LLM_CALLS_PER_RUN` is a per-run hard call cap.
 - `CHIMERA_MEMORY_ENHANCEMENT_MAX_RUN_SECONDS` is a wall-clock batch budget.
+- `CHIMERA_MEMORY_ENHANCEMENT_TIMEOUT_SECONDS` is also an invocation deadline
+  inside the provider sidecar: OAuth failover, API-key failover, and Gemini
+  model-candidate retries stop once the per-call budget expires.
 
 Cost-cap stops release claimed-but-unprocessed jobs instead of marking them
 failed.

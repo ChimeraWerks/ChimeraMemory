@@ -5,6 +5,9 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
+import chimera_memory.memory_enhancement_provider_sidecar as provider_sidecar
 from chimera_memory.memory_enhancement_credentials import EnvMemoryEnhancementCredentialResolver
 from chimera_memory.memory_enhancement_oauth import (
     AUTH_TYPE_API_KEY,
@@ -39,6 +42,32 @@ def test_resolving_provider_client_resolves_api_key_ref_per_invocation():
 
     assert result == {"summary": "TEST_ONLY_API_KEY"}
     assert captured == ["TEST_ONLY_API_KEY"]
+
+
+def test_resolving_provider_client_times_out_api_key_overrun(monkeypatch):
+    ticks = iter((0.0, 0.0, 13.0))
+    monkeypatch.setattr(provider_sidecar.time, "monotonic", lambda: next(ticks))
+
+    class FakeApiKeyClient:
+        def invoke(self, _invocation):
+            return {"summary": "late"}
+
+    client = ResolvingMemoryEnhancementProviderClient(
+        credential_resolver=EnvMemoryEnhancementCredentialResolver({"PA_PROVIDER_TOKEN": "TEST_ONLY_API_KEY"}),
+        api_key_client_factory=lambda _token: FakeApiKeyClient(),
+    )
+
+    with pytest.raises(RuntimeError, match="memory enhancement provider timeout"):
+        client.invoke(_invocation("openai", "gpt-4o-mini", "env:PA_PROVIDER_TOKEN"))
+
+
+def test_sidecar_remaining_timeout_seconds_uses_monotonic_deadline(monkeypatch):
+    ticks = iter((10.1, 12.0))
+    monkeypatch.setattr(provider_sidecar.time, "monotonic", lambda: next(ticks))
+
+    assert provider_sidecar._remaining_timeout_seconds(12.0) == 2
+    with pytest.raises(RuntimeError, match="memory enhancement provider timeout"):
+        provider_sidecar._remaining_timeout_seconds(12.0)
 
 
 def test_resolving_provider_client_resolves_pooled_api_key_ref_per_invocation(tmp_path: Path):

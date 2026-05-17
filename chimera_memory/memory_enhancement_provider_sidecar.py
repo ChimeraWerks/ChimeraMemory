@@ -58,6 +58,35 @@ GOOGLE_CLOUDCODE_DISCOVERY_HEADERS = {
 }
 
 
+def _deadline_from_invocation(invocation: Mapping[str, Any]) -> float:
+    budget = _memory_model_client_module()._budget(invocation)
+    return time.monotonic() + max(1, int(budget.timeout_seconds))
+
+
+def _raise_if_deadline_expired(deadline: float) -> None:
+    if time.monotonic() >= deadline:
+        raise RuntimeError("memory enhancement provider timeout")
+
+
+def _remaining_timeout_seconds(deadline: float) -> int:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise RuntimeError("memory enhancement provider timeout")
+    return max(1, int(remaining + 0.999))
+
+
+def _invoke_api_key_client_with_deadline(
+    client: Any,
+    invocation: Mapping[str, Any],
+    *,
+    deadline: float,
+) -> Mapping[str, Any]:
+    _raise_if_deadline_expired(deadline)
+    result = client.invoke(invocation)
+    _raise_if_deadline_expired(deadline)
+    return result
+
+
 class ResolvingMemoryEnhancementProviderClient:
     """Provider client that resolves credential refs for each invocation."""
 
@@ -75,21 +104,30 @@ class ResolvingMemoryEnhancementProviderClient:
         self._opener = opener
 
     def invoke(self, invocation: Mapping[str, Any]) -> Mapping[str, Any]:
+        deadline = _deadline_from_invocation(invocation)
         provider = _provider(invocation)
         provider_id = provider["provider_id"]
         credential_ref = _credential_ref(provider)
         if not credential_ref:
-            return self._api_key_client_factory("").invoke(invocation)
+            return _invoke_api_key_client_with_deadline(
+                self._api_key_client_factory(""),
+                invocation,
+                deadline=deadline,
+            )
         ref = MemoryEnhancementCredentialRef.parse(credential_ref)
         if ref.scheme == "oauth":
             credential = self._oauth_resolver.resolve_oauth(ref, provider_id=_oauth_provider_id(provider_id))
-            return self._invoke_with_pooled_failover(invocation, provider, credential)
+            return self._invoke_with_pooled_failover(invocation, provider, credential, deadline=deadline)
         if ref.scheme == "secret":
             pooled = self._resolve_pooled_api_key(ref, provider_id=provider_id)
             if pooled:
-                return self._invoke_api_key_with_pooled_failover(invocation, provider, pooled)
+                return self._invoke_api_key_with_pooled_failover(invocation, provider, pooled, deadline=deadline)
         resolved = self._credential_resolver.resolve(ref)
-        return self._api_key_client_factory(resolved.value).invoke(invocation)
+        return _invoke_api_key_client_with_deadline(
+            self._api_key_client_factory(resolved.value),
+            invocation,
+            deadline=deadline,
+        )
 
     def _resolve_pooled_api_key(
         self,
@@ -114,13 +152,16 @@ class ResolvingMemoryEnhancementProviderClient:
         invocation: Mapping[str, Any],
         provider: Mapping[str, str],
         credential: MemoryEnhancementOAuthCredential,
+        *,
+        deadline: float,
     ) -> Mapping[str, Any]:
         current = credential
         attempted: set[str] = set()
         while True:
+            _raise_if_deadline_expired(deadline)
             attempted.add(current.name)
             try:
-                return self._invoke_oauth(invocation, provider, current)
+                return self._invoke_oauth(invocation, provider, current, deadline=deadline)
             except RuntimeError as exc:
                 context = _pool_exhaustion_context(exc)
                 if context is None:
@@ -145,13 +186,20 @@ class ResolvingMemoryEnhancementProviderClient:
         invocation: Mapping[str, Any],
         provider: Mapping[str, str],
         credential: MemoryEnhancementPooledCredential,
+        *,
+        deadline: float,
     ) -> Mapping[str, Any]:
         current = credential
         attempted: set[str] = set()
         while True:
+            _raise_if_deadline_expired(deadline)
             attempted.add(current.id)
             try:
-                return self._api_key_client_factory(current.access_token).invoke(invocation)
+                return _invoke_api_key_client_with_deadline(
+                    self._api_key_client_factory(current.access_token),
+                    invocation,
+                    deadline=deadline,
+                )
             except RuntimeError as exc:
                 context = _pool_exhaustion_context(exc)
                 if context is None:
@@ -173,13 +221,16 @@ class ResolvingMemoryEnhancementProviderClient:
         invocation: Mapping[str, Any],
         provider: Mapping[str, str],
         credential: MemoryEnhancementOAuthCredential,
+        *,
+        deadline: float,
     ) -> Mapping[str, Any]:
+        _raise_if_deadline_expired(deadline)
         provider_id = provider["provider_id"]
         if provider_id == "openai" and credential.transport == "openai_codex":
-            return _invoke_openai_codex(invocation, provider, credential, opener=self._opener)
+            return _invoke_openai_codex(invocation, provider, credential, opener=self._opener, deadline=deadline)
         if provider_id == "anthropic" and credential.transport == "anthropic_oauth":
             try:
-                return _invoke_anthropic_oauth(invocation, provider, credential, opener=self._opener)
+                return _invoke_anthropic_oauth(invocation, provider, credential, opener=self._opener, deadline=deadline)
             except RuntimeError as exc:
                 if str(exc) != "memory enhancement provider auth failed":
                     raise
@@ -189,7 +240,7 @@ class ResolvingMemoryEnhancementProviderClient:
                     provider_id="anthropic",
                     force_refresh=True,
                 )
-                return _invoke_anthropic_oauth(invocation, provider, refreshed, opener=self._opener)
+                return _invoke_anthropic_oauth(invocation, provider, refreshed, opener=self._opener, deadline=deadline)
         if provider_id == "google" and credential.transport == "google_cloudcode":
             return _invoke_google_cloudcode(
                 invocation,
@@ -197,6 +248,7 @@ class ResolvingMemoryEnhancementProviderClient:
                 credential,
                 store=self._credential_store(),
                 opener=self._opener,
+                deadline=deadline,
             )
         raise RuntimeError("memory enhancement provider oauth transport unavailable")
 
@@ -310,7 +362,9 @@ def _invoke_openai_codex(
     credential: MemoryEnhancementOAuthCredential,
     *,
     opener: Callable[..., Any] | None,
+    deadline: float,
 ) -> Mapping[str, Any]:
+    _raise_if_deadline_expired(deadline)
     model_client = _memory_model_client_module()
     budget = model_client._budget(invocation)
     request_id = str(invocation.get("request_id") or uuid.uuid4())
@@ -336,9 +390,10 @@ def _invoke_openai_codex(
             **_openai_codex_headers(credential.access_token),
         },
         opener=opener or model_client.urllib.request.urlopen,
-        timeout_seconds=budget.timeout_seconds,
+        timeout_seconds=min(budget.timeout_seconds, _remaining_timeout_seconds(deadline)),
         model_client=model_client,
     )
+    _raise_if_deadline_expired(deadline)
     return _model_client_parse_response(model_client, invocation, response_text)
 
 
@@ -472,7 +527,9 @@ def _invoke_anthropic_oauth(
     credential: MemoryEnhancementOAuthCredential,
     *,
     opener: Callable[..., Any] | None,
+    deadline: float,
 ) -> Mapping[str, Any]:
+    _raise_if_deadline_expired(deadline)
     model_client = _memory_model_client_module()
     budget = model_client._budget(invocation)
     system_prompt = _anthropic_oauth_system_prompt(_model_client_system_prompt(model_client, invocation))
@@ -490,11 +547,12 @@ def _invoke_anthropic_oauth(
             **_anthropic_oauth_headers(),
         },
         opener=opener or model_client.urllib.request.urlopen,
-        timeout_seconds=budget.timeout_seconds,
+        timeout_seconds=min(budget.timeout_seconds, _remaining_timeout_seconds(deadline)),
         provider_id=str(provider.get("provider_id") or "anthropic"),
         model=str(provider.get("model") or ""),
         model_client=model_client,
     )
+    _raise_if_deadline_expired(deadline)
     content = response.get("content") if isinstance(response.get("content"), list) else []
     first = content[0] if content and isinstance(content[0], Mapping) else {}
     return _model_client_parse_response(model_client, invocation, first.get("text"))
@@ -586,6 +644,7 @@ def _invoke_google_cloudcode(
     *,
     store: MemoryEnhancementOAuthStore | None = None,
     opener: Callable[..., Any] | None,
+    deadline: float,
 ) -> Mapping[str, Any]:
     model_client = _memory_model_client_module()
     budget = model_client._budget(invocation)
@@ -595,6 +654,7 @@ def _invoke_google_cloudcode(
 
     with bind_credential(credential, store=store):
         for model in model_candidates:
+            _raise_if_deadline_expired(deadline)
             client = _hermes_google_client_class()(
                 api_key="google-oauth",
                 base_url=credential.base_url or None,
@@ -610,9 +670,10 @@ def _invoke_google_cloudcode(
                     stream=True,
                     temperature=0,
                     max_tokens=budget.max_output_tokens,
-                    timeout=budget.timeout_seconds,
+                    timeout=min(budget.timeout_seconds, _remaining_timeout_seconds(deadline)),
                 )
                 text = _hermes_google_response_text(response)
+                _raise_if_deadline_expired(deadline)
                 return _model_client_parse_response(model_client, invocation, text)
             except Exception as exc:
                 runtime_error = _runtime_error_from_hermes_google_error(exc)
