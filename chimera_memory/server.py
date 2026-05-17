@@ -872,6 +872,57 @@ def create_server():
         return "\n".join(lines)
 
     @server.tool()
+    def memory_authored_writeback(
+        payload_yaml: str,
+        persona: str | None = None,
+        relative_path: str = "",
+        write: bool = False,
+        enqueue: bool = True,
+    ) -> str:
+        """Plan or write a structured authored memory payload and queue enrichment."""
+        _ensure_memory_indexed()
+        import yaml
+        from .memory import memory_authored_writeback as _authored_writeback
+
+        try:
+            payload = yaml.safe_load(payload_yaml)
+        except yaml.YAMLError:
+            return "Authored writeback failed: payload YAML is invalid"
+        if not isinstance(payload, dict):
+            return "Authored writeback failed: payload must be a mapping"
+
+        selected_persona = (persona or os.environ.get("TRANSCRIPT_PERSONA") or "").strip()
+        personas_dir = Path(os.environ.get("CHIMERA_PERSONAS_DIR", "C:/Github/ChimeraPersonas/personas"))
+        result = _authored_writeback(
+            _get_memory_conn(),
+            personas_dir,
+            persona=selected_persona,
+            payload=payload,
+            relative_path=relative_path,
+            write=write,
+            enqueue=enqueue,
+            actor="mcp",
+        )
+        if not result.get("ok"):
+            return f"Authored writeback failed: {result.get('error', 'unknown error')}"
+
+        if not result.get("written"):
+            plan = result.get("plan") or {}
+            request_payload = plan.get("request_payload") or {}
+            contract = request_payload.get("contract") if isinstance(request_payload, dict) else {}
+            structured_rows = contract.get("structured_field_count", 0) if isinstance(contract, dict) else 0
+            return (
+                "Authored writeback preview only. Re-run with write=true to persist. "
+                f"path={plan.get('relative_path', '')} rows={structured_rows}"
+            )
+
+        job = ((result.get("enrichment_job") or {}).get("job") or {})
+        return (
+            f"Wrote authored memory to {result['relative_path']} ({selected_persona}). "
+            f"enrichment_job={job.get('job_id') or 'not queued'}"
+        )
+
+    @server.tool()
     def memory_import_chatgpt_export(
         export_path: str,
         persona: str = "",

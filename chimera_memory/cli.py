@@ -82,6 +82,20 @@ def main():
     sub_enhance_authored_enqueue.add_argument("--provider", default="", help="Requested provider hint")
     sub_enhance_authored_enqueue.add_argument("--model", default="", help="Requested model hint")
     sub_enhance_authored_enqueue.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    sub_enhance_authored_write = enhance_subparsers.add_parser(
+        "authored-write",
+        help="Plan or write a structured authored memory file and queue enrichment",
+    )
+    sub_enhance_authored_write.add_argument("--db", help="Path to transcript.db")
+    sub_enhance_authored_write.add_argument("--personas-dir", required=True, help="Root personas directory")
+    sub_enhance_authored_write.add_argument("--persona", required=True, help="Persona writing the memory")
+    sub_enhance_authored_write.add_argument("--payload", required=True, help="YAML file containing structured payload")
+    sub_enhance_authored_write.add_argument("--relative-path", default="", help="Optional target relative path")
+    sub_enhance_authored_write.add_argument("--write", action="store_true", help="Persist the memory file")
+    sub_enhance_authored_write.add_argument("--no-enqueue", action="store_true", help="Do not queue enrichment after write")
+    sub_enhance_authored_write.add_argument("--provider", default="", help="Requested provider hint")
+    sub_enhance_authored_write.add_argument("--model", default="", help="Requested model hint")
+    sub_enhance_authored_write.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     sub_enhance_dry_run = enhance_subparsers.add_parser("dry-run", help="Process queued jobs with deterministic local metadata")
     sub_enhance_dry_run.add_argument("--db", help="Path to transcript.db")
     sub_enhance_dry_run.add_argument("--persona", help="Only process jobs for this persona")
@@ -390,6 +404,60 @@ def _run_enhance(args):
                 f"Persona: {job.get('persona', '')}",
             ],
         )
+        return
+
+    if args.enhance_command == "authored-write":
+        from pathlib import Path
+
+        from .memory import memory_authored_writeback
+        from .memory_authored_writeback import load_authored_memory_payload
+
+        try:
+            payload = load_authored_memory_payload(args.payload)
+        except ValueError as exc:
+            print(f"Authored write failed: {exc}", file=sys.stderr)
+            sys.exit(2)
+
+        conn = _open_memory_db(args.db)
+        try:
+            result = memory_authored_writeback(
+                conn,
+                Path(args.personas_dir),
+                persona=args.persona,
+                payload=payload,
+                relative_path=args.relative_path,
+                write=args.write,
+                enqueue=not args.no_enqueue,
+                requested_provider=args.provider,
+                requested_model=args.model,
+                actor="cli",
+            )
+        finally:
+            conn.close()
+
+        if not result.get("ok"):
+            _emit_json_or_lines(
+                result,
+                json_output=args.json,
+                lines=[f"Authored write failed: {result.get('error', 'unknown error')}"],
+            )
+            sys.exit(2)
+
+        if result.get("written"):
+            job = ((result.get("enrichment_job") or {}).get("job") or {})
+            lines = [
+                f"Wrote authored memory: {result.get('relative_path', '')}",
+                f"Indexed: {result.get('indexed')}",
+                f"Enrichment job: {job.get('job_id', 'not queued')}",
+            ]
+        else:
+            plan = result.get("plan") or {}
+            lines = [
+                "Authored memory preview only. Re-run with --write to persist.",
+                f"Relative path: {plan.get('relative_path', '')}",
+                f"Structured rows: {plan.get('request_payload', {}).get('contract', {}).get('structured_field_count', 0)}",
+            ]
+        _emit_json_or_lines(result, json_output=args.json, lines=lines)
         return
 
     if args.enhance_command == "dry-run":

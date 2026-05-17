@@ -5,6 +5,7 @@ import threading
 from pathlib import Path
 
 import pytest
+import yaml
 
 from chimera_memory.cli import main
 from chimera_memory.memory import index_file, init_memory_tables, memory_enhancement_enqueue
@@ -141,6 +142,76 @@ def test_cli_enhance_authored_enqueue_json(tmp_path: Path, monkeypatch, capsys) 
     assert enqueued["job"]["path"] == "day61/structured-writeback"
     assert enqueued["job"]["request_payload"]["task"] == "enrich_authored_memory_payload"
     assert enqueued["job"]["request_payload"]["contract"]["action_items"] == ["Keep LLM enrichment narrow"]
+
+
+def test_cli_enhance_authored_write_yaml_json(tmp_path: Path, monkeypatch, capsys) -> None:
+    db_path = tmp_path / "transcript.db"
+    personas_dir = tmp_path / "personas"
+    (personas_dir / "researcher" / "sarah").mkdir(parents=True)
+    payload_path = tmp_path / "authored.yaml"
+    payload_path.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "memory_id": "slice-4-writer",
+                "memory_type": "procedural",
+                "memory_payload": {
+                    "lessons": [{"teaching": "Structured writer preserves authored fields."}],
+                    "next_steps": [{"action": "Queue narrow enrichment"}],
+                    "entities": {"projects": ["ChimeraMemory"], "topics": ["writeback discipline"]},
+                },
+                "provenance": {
+                    "default_status": "user_confirmed",
+                    "requires_review": False,
+                    "confidence": 1.0,
+                },
+                "review_status": "confirmed",
+                "source_refs": [{"kind": "test", "uri": "cli-authored-write"}],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "chimera-memory",
+            "enhance",
+            "authored-write",
+            "--db",
+            str(db_path),
+            "--personas-dir",
+            str(personas_dir),
+            "--persona",
+            "sarah",
+            "--payload",
+            str(payload_path),
+            "--write",
+            "--json",
+        ],
+    )
+
+    main()
+
+    written = json.loads(capsys.readouterr().out)
+    assert written["ok"] is True
+    assert written["written"] is True
+    assert written["relative_path"] == "memory/procedural/slice-4-writer.md"
+    assert Path(written["path"]).exists()
+    assert written["enrichment_job"]["job"]["file_id"] == written["file_id"]
+
+    conn = sqlite3.connect(db_path)
+    try:
+        row = conn.execute(
+            "SELECT status, request_payload FROM memory_enhancement_jobs WHERE file_id = ?",
+            (written["file_id"],),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row[0] == "pending"
+    assert json.loads(row[1])["task"] == "enrich_authored_memory_payload"
 
 
 def test_cli_enhance_enqueue_missing_file_exits_cleanly(tmp_path: Path, monkeypatch, capsys) -> None:

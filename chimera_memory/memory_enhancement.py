@@ -264,6 +264,7 @@ _AUTHORED_PRIMARY_ITEM_KEYS = {
 }
 _AUTHORED_TOP_LEVEL_ALIASES = {
     "schema_version": "payload_schema_version",
+    "payload_schema_version": "payload_schema_version",
     "memory_id": "memory_id",
     "memory_type": "memory_type",
     "importance": "importance",
@@ -299,7 +300,7 @@ _AUTHORED_NESTED_KEY_ALIASES = {
     "ref": "uri",
     "note": "description",
 }
-_AUTHORED_SOURCE_REF_KEYS = ("kind", "uri", "title", "timestamp")
+_AUTHORED_SOURCE_REF_KEYS = ("kind", "uri", "title", "description", "timestamp")
 _AUTHORED_MODEL_AUDIT_KEYS = ("provider", "model", "role")
 _MEMORY_TYPE_ALIASES = {
     "episode": "episodic",
@@ -835,7 +836,18 @@ def _clean_authored_provenance(value: Any) -> dict[str, Any]:
 
 
 def _authored_memory_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
-    raw = payload.get("memory_payload") if isinstance(payload.get("memory_payload"), Mapping) else payload
+    if isinstance(payload.get("memory_payload"), Mapping):
+        if payload.get("task") == "enrich_authored_memory_payload":
+            raw = dict(payload["memory_payload"])
+        else:
+            raw = {
+                key: value
+                for key, value in payload.items()
+                if key not in {"memory_payload", "enrichment"}
+            }
+            raw.update(payload["memory_payload"])  # structured fields win over envelope defaults
+    else:
+        raw = payload
     if not isinstance(raw, Mapping):
         return {}
 
@@ -1067,7 +1079,7 @@ def build_authored_memory_enrichment_request(
     request_id: str | None = None,
 ) -> dict[str, Any]:
     """Build an enrichment-only request for caller-authored memory payloads."""
-    safe_payload = _authored_memory_payload({"memory_payload": memory_payload})
+    safe_payload = _authored_memory_payload(memory_payload)
     rows = _authored_memory_rows(safe_payload)
     if not rows:
         raise ValueError("authored memory payload requires at least one structured field")

@@ -170,10 +170,23 @@ def memory_enhancement_enqueue_authored(
     memory_payload: dict,
     provenance: dict | None = None,
     source_ref: str = "",
+    file_id: int | None = None,
     requested_provider: str = "",
     requested_model: str = "",
 ) -> dict:
     """Queue enrichment for a caller-authored structured memory payload."""
+    if file_id:
+        existing = conn.execute(
+            """
+            SELECT job_id FROM memory_enhancement_jobs
+            WHERE file_id = ? AND status IN ('pending', 'running')
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (file_id,),
+        ).fetchone()
+        if existing:
+            return {"ok": True, "enqueued": False, "job": _select_enhancement_job(conn, existing[0])}
     try:
         request_payload = build_authored_memory_enrichment_request(
             memory_payload=memory_payload,
@@ -197,11 +210,12 @@ def memory_enhancement_enqueue_authored(
         INSERT INTO memory_enhancement_jobs (
             job_id, status, persona, file_id, path, content_fingerprint,
             requested_provider, requested_model, request_payload
-        ) VALUES (?, 'pending', ?, NULL, ?, ?, ?, ?, ?)
+        ) VALUES (?, 'pending', ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             job_id,
             request_payload.get("persona"),
+            file_id,
             path,
             fingerprint,
             requested_provider or "",

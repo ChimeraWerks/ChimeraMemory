@@ -73,6 +73,10 @@ from .memory_observability import (
     record_memory_recall_trace,
 )
 from .memory_auto_capture import build_auto_capture_plan, write_auto_capture_file
+from .memory_authored_writeback import (
+    build_authored_memory_write_plan,
+    write_authored_memory_file,
+)
 from .memory_review import REVIEW_ACTIONS, memory_review_action, memory_review_pending
 from .memory_schema import init_memory_tables
 
@@ -826,6 +830,106 @@ def memory_auto_capture_session_close(
         "action_items": plan.get("action_items", []),
         "guard_findings": plan.get("guard_findings", []),
         "shadow_enhancement": shadow_result,
+    }
+
+
+def memory_authored_writeback(
+    conn: sqlite3.Connection,
+    personas_dir: Path,
+    *,
+    persona: str,
+    payload: dict,
+    relative_path: str = "",
+    write: bool = False,
+    enqueue: bool = True,
+    requested_provider: str = "",
+    requested_model: str = "",
+    actor: str = "agent",
+) -> dict:
+    """Plan or write a structured authored memory and queue narrow enrichment."""
+    plan = build_authored_memory_write_plan(
+        payload=payload,
+        persona=persona,
+        relative_path=relative_path,
+    )
+    if not plan.get("ok"):
+        return plan
+
+    audit_payload = {
+        "schema_version": plan["schema_version"],
+        "relative_path": plan["relative_path"],
+        "structured_field_count": plan["request_payload"]["contract"]["structured_field_count"],
+        "guard_findings": plan.get("guard_findings", []),
+        "write": bool(write),
+        "enqueue": bool(enqueue),
+    }
+    if not write:
+        record_memory_audit_event(
+            conn,
+            "memory_authored_writeback_planned",
+            persona=persona,
+            target_kind="authored_memory_writeback",
+            target_id=plan["relative_path"],
+            payload=audit_payload,
+            actor=actor,
+        )
+        preview = {key: value for key, value in plan.items() if key != "body"}
+        preview["body_preview"] = plan["body"][:1200]
+        return {"ok": True, "written": False, "plan": preview}
+
+    write_result = write_authored_memory_file(personas_dir, plan)
+    if not write_result.get("ok"):
+        return write_result
+
+    full_path = Path(write_result["path"])
+    relative = write_result["relative_path"]
+    indexed = index_file(conn, persona, relative, full_path)
+    row = conn.execute(
+        "SELECT id FROM memory_files WHERE path = ?",
+        (str(full_path).replace("\\", "/"),),
+    ).fetchone()
+    file_id = row[0] if row else None
+    queue_result = {"ok": True, "enqueued": False, "job": None}
+    if enqueue:
+        queue_result = memory_enhancement_enqueue_authored(
+            conn,
+            persona=persona,
+            memory_payload=payload,
+            provenance=plan.get("request_payload", {}).get("provenance") or {},
+            source_ref=relative,
+            file_id=file_id,
+            requested_provider=requested_provider,
+            requested_model=requested_model,
+        )
+    audit_payload.update(
+        {
+            "relative_path": relative,
+            "path": str(full_path).replace("\\", "/"),
+            "indexed": indexed,
+            "file_id": file_id,
+            "enrichment_job_id": (queue_result.get("job") or {}).get("job_id"),
+        }
+    )
+    record_memory_audit_event(
+        conn,
+        "memory_authored_writeback_written",
+        persona=persona,
+        target_kind="memory_file",
+        target_id=str(file_id or relative),
+        payload=audit_payload,
+        actor=actor,
+        commit=False,
+    )
+    conn.commit()
+    return {
+        "ok": True,
+        "written": True,
+        "path": str(full_path),
+        "relative_path": relative,
+        "file_id": file_id,
+        "indexed": indexed,
+        "enrichment_job": queue_result,
+        "guard_findings": plan.get("guard_findings", []),
     }
 
 
