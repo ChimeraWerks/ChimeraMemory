@@ -25,6 +25,7 @@ from .memory_enhancement_oauth import (
     require_valid_oauth_name,
     require_valid_oauth_provider_id,
 )
+from .hermes_gemini_oauth import run_gemini_oauth_login_pure as _run_hermes_gemini_oauth_login_pure
 
 
 # Vendored from Hermes OAuth login paths. Keep provider protocol constants and
@@ -42,6 +43,7 @@ OPENAI_CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 _DEFAULT_OAUTH_NAMES = {
     "openai": "openai-memory",
     "anthropic": "anthropic-memory",
+    "google": "google-memory",
 }
 
 _claude_code_version_cache: str | None = None
@@ -58,6 +60,7 @@ def run_hermes_memory_enhancement_oauth_login(
     provider_id: str,
     *,
     name: str = "",
+    project_id: str = "",
     store: MemoryEnhancementOAuthStore | None = None,
 ) -> dict[str, Any]:
     provider_id = _provider_id(provider_id)
@@ -88,6 +91,23 @@ def run_hermes_memory_enhancement_oauth_login(
             payload=tokens,
             base_url=str(creds.get("base_url") or OPENAI_CODEX_BASE_URL),
             extra={"last_refresh": str(creds.get("last_refresh") or ""), "auth_mode": str(creds.get("auth_mode") or "chatgpt")},
+        )
+    elif provider_id == "google":
+        creds = _run_hermes_gemini_oauth_login_pure(project_id=project_id)
+        if not creds:
+            raise MemoryEnhancementCredentialResolutionError("memory enhancement google oauth login returned no credentials")
+        credential = _credential_from_hermes_payload(
+            provider_id=provider_id,
+            name=credential_name,
+            source="manual:hermes_google_pkce",
+            transport="google_cloudcode",
+            payload=creds,
+            project_id=_payload_text(creds, "project_id"),
+            account_label=_payload_text(creds, "email"),
+            extra={
+                "email": _payload_text(creds, "email"),
+                "managed_project_id": _payload_text(creds, "managed_project_id"),
+            },
         )
     else:
         raise ProtocolValidationError("memory enhancement hermes oauth provider unsupported")
@@ -374,6 +394,8 @@ def _credential_from_hermes_payload(
     transport: str,
     payload: Mapping[str, Any],
     base_url: str = "",
+    project_id: str = "",
+    account_label: str = "",
     extra: Mapping[str, Any] | None = None,
 ) -> MemoryEnhancementOAuthCredential:
     access_token = _payload_text(payload, "access_token")
@@ -388,6 +410,8 @@ def _credential_from_hermes_payload(
         refresh_token=refresh_token,
         transport=transport,
         base_url=base_url,
+        project_id=project_id,
+        account_label=account_label,
         extra=dict(extra or {}),
     )
     return _credential_from_refresh_payload(

@@ -240,7 +240,7 @@ Optional request hints:
 
 ```text
 CHIMERA_MEMORY_ENHANCEMENT_SHADOW_PROVIDER=openai
-CHIMERA_MEMORY_ENHANCEMENT_SHADOW_MODEL=gpt-5.4
+CHIMERA_MEMORY_ENHANCEMENT_SHADOW_MODEL=gpt-5.3-codex-spark
 ```
 
 Auto-enqueue hooks currently exist for:

@@ -11,6 +11,7 @@ import sqlite3
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
+from .memory_enhancement_model_client import MemoryEnhancementCostCapError
 from .memory_enhancement_provider import (
     EnhancementProviderPlan,
     build_enhancement_invocation,
@@ -40,6 +41,17 @@ def _safe_failure_payload(category: str, plan: EnhancementProviderPlan, job: Map
     }
 
 
+def _run_call_cap(env: Mapping[str, str], plan: EnhancementProviderPlan) -> int:
+    raw = str(env.get("CHIMERA_MEMORY_ENHANCEMENT_MAX_LLM_CALLS_PER_RUN") or "").strip()
+    if not raw:
+        return max(0, int(plan.budget.max_jobs_per_run))
+    try:
+        parsed = int(raw)
+    except (TypeError, ValueError):
+        return max(0, int(plan.budget.max_jobs_per_run))
+    return max(0, min(parsed, int(plan.budget.max_jobs_per_run), int(plan.budget.per_minute_call_cap)))
+
+
 def run_memory_enhancement_provider_batch(
     conn: sqlite3.Connection,
     *,
@@ -53,11 +65,15 @@ def run_memory_enhancement_provider_batch(
     The returned receipt is safe to log: it contains provider names, models,
     budget caps, and job ids, but no raw content and no credential values.
     """
-    plan = resolve_enhancement_provider_plan(env or os.environ)
+    source_env = env or os.environ
+    plan = resolve_enhancement_provider_plan(source_env)
+    llm_call_cap = _run_call_cap(source_env, plan)
     max_jobs = plan.budget.max_jobs_per_run if limit is None else min(limit, plan.budget.max_jobs_per_run)
+    max_jobs = min(max_jobs, llm_call_cap)
     max_jobs = max(0, max_jobs)
     processed: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
+    llm_call_count = 0
 
     for _ in range(max_jobs):
         job = memory_enhancement_claim_next(conn, persona=persona)
@@ -65,6 +81,7 @@ def run_memory_enhancement_provider_batch(
             break
 
         invocation = build_enhancement_invocation(job.get("request_payload") or {}, plan)
+        llm_call_count += 1
         try:
             response_payload = dict(client.invoke(invocation))
             result = memory_enhancement_complete(
@@ -84,6 +101,29 @@ def run_memory_enhancement_provider_batch(
                 )
                 continue
             category = "unknown_error"
+        except MemoryEnhancementCostCapError as exc:
+            category = classify_enhancement_failure(exc)
+            conn.execute(
+                """
+                UPDATE memory_enhancement_jobs
+                   SET status = 'pending',
+                       locked_at = NULL,
+                       error = ?
+                 WHERE job_id = ?
+                """,
+                (category, job["job_id"]),
+            )
+            conn.commit()
+            failures.append(
+                {
+                    "job_id": job["job_id"],
+                    "status": "deferred",
+                    "failure_category": category,
+                    "provider_id": plan.selected.provider_id,
+                    "model": plan.selected.model,
+                }
+            )
+            break
         except Exception as exc:
             category = classify_enhancement_failure(str(exc))
 
@@ -111,6 +151,8 @@ def run_memory_enhancement_provider_batch(
         "failures": failures,
         "processed_count": len(processed),
         "failure_count": len(failures),
+        "llm_call_count": llm_call_count,
+        "llm_call_cap": llm_call_cap,
     }
 
 

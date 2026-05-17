@@ -24,6 +24,7 @@ ENTITY_TYPES = {
 }
 
 MENTION_ROLES = {"subject", "tag", "mentioned", "related"}
+ENHANCEMENT_RELATION_TYPES = {"works_on", "uses", "related_to", "member_of", "located_in", "co_occurs_with"}
 
 _WHITESPACE_RE = re.compile(r"\s+")
 _PREFIX_TO_TYPE = {
@@ -771,6 +772,11 @@ def apply_enhancement_entities(
         linked_entities.append(entity)
 
     edge_count = 0
+    linked_by_name = {
+        normalize_entity_name(str(entity.get("canonical_name") or "")): entity
+        for entity in linked_entities
+        if entity.get("canonical_name")
+    }
     for source_entity, target_entity in combinations(linked_entities, 2):
         upsert_memory_entity_edge(
             conn,
@@ -780,6 +786,43 @@ def apply_enhancement_entities(
             confidence=confidence_value,
             classifier_version="memory_enhancement.v2",
             metadata={"file_id": file_id, "source": source},
+            commit=False,
+        )
+        edge_count += 1
+
+    raw_relationships = metadata.get("relationships")
+    relationships = raw_relationships if isinstance(raw_relationships, list) else []
+    for raw in relationships:
+        if not isinstance(raw, dict):
+            continue
+        from_name = str(raw.get("from") or raw.get("source") or "").strip()
+        to_name = str(raw.get("to") or raw.get("target") or "").strip()
+        relation_type = str(raw.get("relation") or raw.get("relation_type") or "related_to").strip()
+        clean_relation = normalize_entity_name(relation_type).replace(" ", "_")
+        raw_confidence = raw.get("confidence")
+        relation_confidence = (
+            float(raw_confidence)
+            if isinstance(raw_confidence, (int, float))
+            else confidence_value
+        )
+        source_entity = linked_by_name.get(normalize_entity_name(from_name))
+        target_entity = linked_by_name.get(normalize_entity_name(to_name))
+        if (
+            clean_relation not in ENHANCEMENT_RELATION_TYPES
+            or not source_entity
+            or not target_entity
+            or source_entity["id"] == target_entity["id"]
+            or relation_confidence < 0.5
+        ):
+            continue
+        upsert_memory_entity_edge(
+            conn,
+            source_entity_id=int(source_entity["id"]),
+            target_entity_id=int(target_entity["id"]),
+            relation_type=clean_relation,
+            confidence=relation_confidence,
+            classifier_version="memory_enhancement.v2",
+            metadata={"file_id": file_id, "source": source, "kind": "typed_relationship"},
             commit=False,
         )
         edge_count += 1

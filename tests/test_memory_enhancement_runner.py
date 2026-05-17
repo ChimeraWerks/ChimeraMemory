@@ -10,6 +10,7 @@ from chimera_memory.memory_enhancement_runner import (
     StaticMemoryEnhancementClient,
     run_memory_enhancement_provider_batch,
 )
+from chimera_memory.memory_enhancement_model_client import MemoryEnhancementCostCapError
 
 
 def _index_runner_memory(conn: sqlite3.Connection, tmp_path: Path, name: str = "runner.md") -> None:
@@ -54,6 +55,7 @@ def test_provider_runner_processes_job_with_injected_client(tmp_path: Path) -> N
 
     assert receipt["processed_count"] == 1
     assert receipt["failure_count"] == 0
+    assert receipt["llm_call_count"] == 1
     assert receipt["processed"][0]["job_id"] == enqueued["job"]["job_id"]
     assert receipt["provider"]["selected_provider"] == "openai"
     assert "oauth:openai-memory" not in str(receipt)
@@ -139,3 +141,70 @@ def test_provider_runner_respects_budget_job_limit(tmp_path: Path) -> None:
         ).fetchall()
     ]
     assert statuses == ["succeeded", "pending"]
+
+
+def test_provider_runner_respects_hard_llm_call_cap_before_claiming(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+    _index_runner_memory(conn, tmp_path, "one.md")
+    _index_runner_memory(conn, tmp_path, "two.md")
+    memory_enhancement_enqueue(conn, file_path="one.md")
+    memory_enhancement_enqueue(conn, file_path="two.md")
+    client = StaticMemoryEnhancementClient(
+        [
+            {"memory_type": "semantic", "summary": "first"},
+            {"memory_type": "semantic", "summary": "second"},
+        ]
+    )
+
+    receipt = run_memory_enhancement_provider_batch(
+        conn,
+        client=client,
+        env={
+            "CHIMERA_MEMORY_ENHANCEMENT_PROVIDER_ORDER": "dry_run",
+            "CHIMERA_MEMORY_ENHANCEMENT_MAX_JOBS_PER_RUN": "10",
+            "CHIMERA_MEMORY_ENHANCEMENT_PER_MINUTE_CALL_CAP": "10",
+            "CHIMERA_MEMORY_ENHANCEMENT_MAX_LLM_CALLS_PER_RUN": "0",
+        },
+        limit=10,
+    )
+
+    assert receipt["processed_count"] == 0
+    assert receipt["failure_count"] == 0
+    assert receipt["llm_call_count"] == 0
+    assert receipt["llm_call_cap"] == 0
+    assert client.invocations == []
+    statuses = [
+        row[0]
+        for row in conn.execute(
+            "SELECT status FROM memory_enhancement_jobs ORDER BY path"
+        ).fetchall()
+    ]
+    assert statuses == ["pending", "pending"]
+
+
+def test_provider_runner_defers_claimed_job_when_client_cost_cap_hits(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+    _index_runner_memory(conn, tmp_path, "one.md")
+    memory_enhancement_enqueue(conn, file_path="one.md")
+    client = StaticMemoryEnhancementClient(
+        [
+            MemoryEnhancementCostCapError("memory enhancement cost cap reached: 1 calls"),
+        ]
+    )
+
+    receipt = run_memory_enhancement_provider_batch(
+        conn,
+        client=client,
+        env={
+            "CHIMERA_MEMORY_ENHANCEMENT_PROVIDER_ORDER": "dry_run",
+            "CHIMERA_MEMORY_ENHANCEMENT_MAX_LLM_CALLS_PER_RUN": "10",
+        },
+    )
+
+    assert receipt["processed_count"] == 0
+    assert receipt["failure_count"] == 1
+    assert receipt["failures"][0]["status"] == "deferred"
+    row = conn.execute("SELECT status, locked_at, error FROM memory_enhancement_jobs").fetchone()
+    assert row == ("pending", None, "quota_exceeded")

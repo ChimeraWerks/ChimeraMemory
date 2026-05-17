@@ -5,6 +5,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 
+import pytest
+
+from chimera_memory import hermes_gemini_oauth
 from chimera_memory.memory_enhancement_oauth import MemoryEnhancementOAuthStore
 from chimera_memory.memory_enhancement_hermes_oauth import run_hermes_memory_enhancement_oauth_login
 from chimera_memory.memory_enhancement_oauth_flow import (
@@ -222,6 +225,143 @@ def test_hermes_openai_login_persists_to_memory_pool(monkeypatch, tmp_path: Path
     assert credential.transport == "openai_codex"
     assert credential.base_url == "https://chatgpt.com/backend-api/codex"
     assert credential.extra["auth_mode"] == "chatgpt"
+
+
+def test_hermes_google_login_persists_to_memory_pool(monkeypatch, tmp_path: Path):
+    store = MemoryEnhancementOAuthStore(tmp_path / "auth.json")
+
+    monkeypatch.setattr(
+        "chimera_memory.memory_enhancement_hermes_oauth._run_hermes_gemini_oauth_login_pure",
+        lambda **_kwargs: {
+            "access_token": "TEST_ONLY_GOOGLE_ACCESS",
+            "refresh_token": "TEST_ONLY_GOOGLE_REFRESH",
+            "expires_at_ms": 1_800_000_000_000,
+            "email": "tester@example.invalid",
+            "project_id": "project-test",
+            "managed_project_id": "managed-project-test",
+        },
+    )
+
+    result = run_hermes_memory_enhancement_oauth_login("google", store=store)
+    credential = store.get("google-memory", provider_id="google")
+
+    assert result["status"] == "approved"
+    assert credential.access_token == "TEST_ONLY_GOOGLE_ACCESS"
+    assert credential.refresh_token == "TEST_ONLY_GOOGLE_REFRESH"
+    assert credential.source == "manual:hermes_google_pkce"
+    assert credential.transport == "google_cloudcode"
+    assert credential.project_id == "project-test"
+    assert credential.account_label == "tester@example.invalid"
+    assert credential.extra["managed_project_id"] == "managed-project-test"
+
+
+def test_hermes_google_policy_decline_stops_before_oauth(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda _prompt: "n")
+    monkeypatch.setattr(
+        hermes_gemini_oauth,
+        "start_oauth_flow",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("OAuth should not start")),
+    )
+
+    with pytest.raises(hermes_gemini_oauth.GoogleOAuthError) as exc:
+        hermes_gemini_oauth.run_gemini_oauth_login_pure()
+
+    assert exc.value.code == "google_oauth_cancelled"
+
+
+def test_hermes_google_policy_accept_returns_pool_shape(monkeypatch):
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    monkeypatch.setattr(
+        hermes_gemini_oauth,
+        "start_oauth_flow",
+        lambda **_kwargs: hermes_gemini_oauth.GoogleCredentials(
+            access_token="TEST_ONLY_GOOGLE_ACCESS",
+            refresh_token="TEST_ONLY_GOOGLE_REFRESH",
+            expires_ms=1_800_000_000_000,
+            email="tester@example.invalid",
+            project_id="project-test",
+        ),
+    )
+
+    result = hermes_gemini_oauth.run_gemini_oauth_login_pure()
+
+    assert result == {
+        "access_token": "TEST_ONLY_GOOGLE_ACCESS",
+        "refresh_token": "TEST_ONLY_GOOGLE_REFRESH",
+        "expires_at_ms": 1_800_000_000_000,
+        "email": "tester@example.invalid",
+        "project_id": "project-test",
+    }
+
+
+def test_hermes_google_login_accepts_project_hint(monkeypatch):
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+
+    def fake_start_oauth_flow(**kwargs):
+        captured.update(kwargs)
+        return hermes_gemini_oauth.GoogleCredentials(
+            access_token="TEST_ONLY_GOOGLE_ACCESS",
+            refresh_token="TEST_ONLY_GOOGLE_REFRESH",
+            expires_ms=1_800_000_000_000,
+            project_id=str(kwargs.get("project_id") or ""),
+        )
+
+    monkeypatch.setattr(hermes_gemini_oauth, "start_oauth_flow", fake_start_oauth_flow)
+
+    result = hermes_gemini_oauth.run_gemini_oauth_login_pure(project_id="project-explicit")
+
+    assert captured["project_id"] == "project-explicit"
+    assert result["project_id"] == "project-explicit"
+
+
+def test_hermes_google_oauth_uses_loopback_before_paste_for_non_headless(monkeypatch):
+    calls: list[str] = []
+
+    class FakeServer:
+        server_address = ("127.0.0.1", 18085)
+
+        def serve_forever(self):
+            calls.append("serve")
+
+        def shutdown(self):
+            calls.append("shutdown")
+
+        def server_close(self):
+            calls.append("close")
+
+    class FakeReady:
+        def wait(self, *, timeout):
+            calls.append(f"wait:{timeout}")
+            hermes_gemini_oauth._OAuthCallbackHandler.captured_code = "TEST_ONLY_GOOGLE_CODE"
+            hermes_gemini_oauth._OAuthCallbackHandler.captured_error = None
+            return True
+
+    monkeypatch.setattr(hermes_gemini_oauth, "_is_headless", lambda: False)
+    monkeypatch.setattr(hermes_gemini_oauth, "_require_client_id", lambda: "test-client.apps.googleusercontent.com")
+    monkeypatch.setattr(hermes_gemini_oauth, "_get_client_secret", lambda: "")
+    monkeypatch.setattr(hermes_gemini_oauth, "_generate_pkce_pair", lambda: ("verifier", "challenge"))
+    monkeypatch.setattr(hermes_gemini_oauth.secrets, "token_urlsafe", lambda _n: "state-test")
+    monkeypatch.setattr(hermes_gemini_oauth, "_bind_callback_server", lambda _port: (FakeServer(), 18085))
+    monkeypatch.setattr(hermes_gemini_oauth.threading, "Event", lambda: FakeReady())
+    monkeypatch.setattr(hermes_gemini_oauth.threading, "Thread", lambda **_kwargs: type("FakeThread", (), {"start": lambda self: None, "join": lambda self, timeout=None: None})())
+    monkeypatch.setattr(
+        hermes_gemini_oauth,
+        "exchange_code",
+        lambda code, verifier, redirect_uri, **_kwargs: {
+            "access_token": "TEST_ONLY_GOOGLE_ACCESS",
+            "refresh_token": "TEST_ONLY_GOOGLE_REFRESH",
+            "expires_in": 3600,
+        },
+    )
+    monkeypatch.setattr(hermes_gemini_oauth, "_fetch_user_email", lambda _token: "tester@example.invalid")
+    monkeypatch.setattr(hermes_gemini_oauth, "save_credentials", lambda creds: Path("unused"))
+
+    creds = hermes_gemini_oauth.start_oauth_flow(force_relogin=True, open_browser=False)
+
+    assert creds.access_token == "TEST_ONLY_GOOGLE_ACCESS"
+    assert any(call.startswith("wait:") for call in calls)
 
 
 def _flow_state(tmp_path: Path, flow_id: str):

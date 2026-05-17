@@ -32,7 +32,7 @@ LOCAL_PROVIDERS = {"ollama", "lmstudio", "openai_compatible", "dry_run"}
 DEFAULT_PROVIDER_ORDER = ("openai", "anthropic", "google", "openrouter", "ollama", "lmstudio", "dry_run")
 
 PROVIDER_DEFAULT_MODELS = {
-    "openai": "gpt-4o-mini",
+    "openai": "gpt-5.3-codex-spark",
     "anthropic": "claude-haiku-4-5",
     "google": GOOGLE_CLOUDCODE_MEMORY_DEFAULT_MODEL,
     "openrouter": "openai/gpt-4o-mini",
@@ -521,6 +521,8 @@ def classify_enhancement_failure(
     text = str(message or "").lower()
     if not text:
         return "unknown_error"
+    if "cost cap" in text or "call cap" in text or "max calls" in text:
+        return "quota_exceeded"
     if "credential" in text or "unauthorized" in text or "forbidden" in text or "auth" in text:
         return "auth_error"
     if "deprecated" in text or "unavailable" in text or "not available" in text or "not found" in text or "503" in text:

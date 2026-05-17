@@ -33,7 +33,7 @@ def test_resolve_provider_plan_selects_first_configured_credential_ref() -> None
     )
 
     assert plan.selected.provider_id == "openai"
-    assert plan.selected.model == "gpt-4o-mini"
+    assert plan.selected.model == "gpt-5.3-codex-spark"
     assert plan.selected.uses_user_oauth is True
     assert plan.budget.max_input_tokens == 500
     assert plan.budget.max_output_tokens == 1200

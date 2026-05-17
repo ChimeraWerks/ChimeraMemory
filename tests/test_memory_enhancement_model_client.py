@@ -13,6 +13,7 @@ from chimera_memory.memory_enhancement import (
 from chimera_memory.memory_enhancement_model_client import (
     ANTHROPIC_MESSAGES_ENDPOINT,
     GOOGLE_GENERATE_CONTENT_ENDPOINT,
+    MemoryEnhancementCostCapError,
     OPENAI_CHAT_COMPLETIONS_ENDPOINT,
     OPENROUTER_CHAT_COMPLETIONS_ENDPOINT,
     ProviderModelMemoryEnhancementClient,
@@ -20,6 +21,7 @@ from chimera_memory.memory_enhancement_model_client import (
 )
 from chimera_memory.memory_enhancement_provider import (
     build_enhancement_invocation,
+    classify_enhancement_failure,
     resolve_enhancement_provider_plan,
 )
 
@@ -93,6 +95,7 @@ def test_metadata_from_model_text_extracts_json_from_wrapped_text() -> None:
 
 
 def test_openai_provider_client_builds_json_mode_chat_request_without_leaking_token() -> None:
+    ProviderModelMemoryEnhancementClient.reset_call_count()
     fake_token = "TEST_ONLY_OPENAI_TOKEN"
     captured = {}
 
@@ -128,14 +131,56 @@ def test_openai_provider_client_builds_json_mode_chat_request_without_leaking_to
     assert captured["timeout"] == 30
     assert request.get_header("Authorization") == f"Bearer {fake_token}"
     assert body["response_format"] == {"type": "json_object"}
-    assert body["model"] == "gpt-4o-mini"
+    assert body["model"] == "gpt-5.3-codex-spark"
     assert body["temperature"] == 0
     assert metadata["memory_type"] == "lesson"
     assert metadata["can_use_as_instruction"] is False
     assert fake_token not in str(metadata)
 
 
+def test_cost_cap_blocks_invocation_before_network(monkeypatch) -> None:
+    ProviderModelMemoryEnhancementClient.reset_call_count()
+    monkeypatch.setenv("CHIMERA_MEMORY_ENHANCEMENT_MAX_CALLS", "0")
+    called = False
+
+    def opener(_request, *, timeout):
+        nonlocal called
+        called = True
+        raise AssertionError("network should not be called")
+
+    with pytest.raises(MemoryEnhancementCostCapError):
+        ProviderModelMemoryEnhancementClient(
+            bearer_token="TEST_ONLY_OPENAI_TOKEN",
+            opener=opener,
+        ).invoke(_invocation("openai,dry_run"))
+
+    assert called is False
+
+
+def test_cost_cap_counter_increments_on_failed_calls(monkeypatch) -> None:
+    ProviderModelMemoryEnhancementClient.reset_call_count()
+    monkeypatch.setenv("CHIMERA_MEMORY_ENHANCEMENT_MAX_CALLS", "1")
+
+    def opener(_request, *, timeout):
+        raise TimeoutError("simulated timeout")
+
+    client = ProviderModelMemoryEnhancementClient(
+        bearer_token="TEST_ONLY_OPENAI_TOKEN",
+        opener=opener,
+    )
+
+    with pytest.raises(RuntimeError):
+        client.invoke(_invocation("openai,dry_run"))
+    with pytest.raises(MemoryEnhancementCostCapError):
+        client.invoke(_invocation("openai,dry_run"))
+
+
+def test_cost_cap_error_classifies_as_quota_exceeded() -> None:
+    assert classify_enhancement_failure(MemoryEnhancementCostCapError("memory enhancement cost cap reached")) == "quota_exceeded"
+
+
 def test_anthropic_provider_client_builds_messages_request() -> None:
+    ProviderModelMemoryEnhancementClient.reset_call_count()
     fake_token = "TEST_ONLY_ANTHROPIC_TOKEN"
     captured = {}
 
@@ -175,6 +220,7 @@ def test_anthropic_provider_client_builds_messages_request() -> None:
 
 
 def test_google_provider_client_builds_generate_content_request() -> None:
+    ProviderModelMemoryEnhancementClient.reset_call_count()
     fake_token = "TEST_ONLY_GOOGLE_TOKEN"
     captured = {}
 
@@ -216,6 +262,7 @@ def test_google_provider_client_builds_generate_content_request() -> None:
 
 
 def test_openrouter_provider_client_uses_openai_compatible_chat_request() -> None:
+    ProviderModelMemoryEnhancementClient.reset_call_count()
     fake_token = "TEST_ONLY_OPENROUTER_TOKEN"
     captured = {}
 
@@ -253,6 +300,7 @@ def test_openrouter_provider_client_uses_openai_compatible_chat_request() -> Non
 
 
 def test_ollama_provider_client_uses_local_generate_endpoint_without_bearer_token() -> None:
+    ProviderModelMemoryEnhancementClient.reset_call_count()
     captured = {}
 
     def opener(request, *, timeout):
@@ -283,6 +331,7 @@ def test_ollama_provider_client_uses_local_generate_endpoint_without_bearer_toke
 
 
 def test_lmstudio_provider_client_uses_local_openai_compatible_endpoint_without_token() -> None:
+    ProviderModelMemoryEnhancementClient.reset_call_count()
     captured = {}
 
     def opener(request, *, timeout):
@@ -318,6 +367,7 @@ def test_lmstudio_provider_client_uses_local_openai_compatible_endpoint_without_
 
 
 def test_koboldcpp_openai_compatible_omits_json_mode_and_uses_local_sampling_floor() -> None:
+    ProviderModelMemoryEnhancementClient.reset_call_count()
     captured = {}
 
     def opener(request, *, timeout):
@@ -363,6 +413,7 @@ def test_koboldcpp_openai_compatible_omits_json_mode_and_uses_local_sampling_flo
 
 
 def test_authored_enrichment_request_uses_narrow_prompt_surface() -> None:
+    ProviderModelMemoryEnhancementClient.reset_call_count()
     captured = {}
 
     def opener(request, *, timeout):
@@ -397,7 +448,7 @@ def test_authored_enrichment_request_uses_narrow_prompt_surface() -> None:
 
     body = json.loads(captured["request"].data.decode("utf-8"))
     system_prompt = body["messages"][0]["content"]
-    assert "Allowed top-level keys: entities, topics, dates, confidence, sensitivity_tier" in system_prompt
+    assert "Allowed top-level keys: entities, relationships, topics, dates, confidence, sensitivity_tier" in system_prompt
     assert "action_items" in system_prompt
     assert "Do not output memory_type, summary, action_items" in system_prompt
     assert "Action items should be stable imperative directives" not in system_prompt
@@ -440,6 +491,7 @@ def test_provider_client_dry_run_path_needs_no_token() -> None:
 
 
 def test_provider_client_failures_are_bounded_and_do_not_include_tokens_or_content() -> None:
+    ProviderModelMemoryEnhancementClient.reset_call_count()
     fake_token = "TEST_ONLY_OPENAI_TOKEN"
 
     def opener(request, *, timeout):

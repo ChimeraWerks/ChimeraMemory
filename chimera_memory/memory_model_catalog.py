@@ -32,6 +32,7 @@ _MODEL_CATALOG_CACHE_TIME = 0.0
 
 _PREFERRED_MEMORY_MODELS: dict[str, tuple[str, ...]] = {
     "openai": (
+        "gpt-5.3-codex-spark",
         "gpt-4o-mini",
         "gpt-4.1-mini",
         "gpt-4.1-nano",

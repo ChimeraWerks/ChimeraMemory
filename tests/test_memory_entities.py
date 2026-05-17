@@ -164,12 +164,16 @@ def test_apply_enhancement_entities_links_typed_contract_entities(tmp_path: Path
                 {"name": "May 17 2026", "type": "date", "confidence": 0.7},
                 {"name": "discard me", "type": "project", "confidence": 0.2},
             ],
+            "relationships": [
+                {"from": "Sarah", "to": "Anthropic adapter", "relation": "works_on", "confidence": 0.85},
+                {"from": "Anthropic adapter", "to": "May 17 2026", "relation": "made_up", "confidence": 0.95},
+            ],
             "topics": ["wire-level"],
             "confidence": 0.6,
         },
     )
 
-    assert result == {"link_count": 4, "edge_count": 6}
+    assert result == {"link_count": 4, "edge_count": 7}
     links = memory_file_entity_links(conn, file_path="adapter.md")
     by_name = {link["canonical_name"]: link for link in links}
 
@@ -180,3 +184,7 @@ def test_apply_enhancement_entities_links_typed_contract_entities(tmp_path: Path
     assert by_name["wire-level"]["entity_type"] == "topic"
     assert by_name["wire-level"]["mention_role"] == "tag"
     assert by_name["Anthropic adapter"]["confidence"] == 0.9
+    typed_edges = memory_entity_edge_query(conn, entity_name="Sarah", relation_type="works_on")
+    assert len(typed_edges) == 1
+    assert typed_edges[0]["target"]["canonical_name"] == "Anthropic adapter"
+    assert typed_edges[0]["confidence"] == 0.85

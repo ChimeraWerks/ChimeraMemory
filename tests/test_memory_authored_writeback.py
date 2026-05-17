@@ -157,6 +157,7 @@ def test_memory_authored_writeback_writes_indexes_and_queues(tmp_path: Path) -> 
     assert job["request_payload"]["task"] == "enrich_authored_memory_payload"
     assert job["request_payload"]["policy"]["llm_may_only_enrich"] == [
         "entities",
+        "relationships",
         "topics",
         "dates",
         "confidence",

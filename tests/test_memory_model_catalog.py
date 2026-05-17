@@ -38,6 +38,14 @@ def _catalog() -> dict:
                     "limit": {"context": 128000, "output": 4096},
                     "cost": {"input": 0.15, "output": 0.6},
                 },
+                "gpt-5.3-codex-spark": {
+                    "id": "gpt-5.3-codex-spark",
+                    "name": "GPT-5.3 Codex Spark",
+                    "tool_call": True,
+                    "modalities": {"input": ["text"], "output": ["text"]},
+                    "limit": {"context": 128000, "output": 4096},
+                    "cost": {"input": 0.0, "output": 0.0},
+                },
                 "image-only": {
                     "id": "image-only",
                     "name": "Image only",
@@ -132,14 +140,14 @@ def test_load_model_catalog_uses_fresh_disk_without_network(tmp_path: Path) -> N
         now=1100.0,
     )
 
-    assert provider_info("openai", catalog=data).model_count == 4
+    assert provider_info("openai", catalog=data).model_count == 5
 
 
 def test_recommended_models_filter_for_memory_enhancement() -> None:
     reset_model_catalog_cache()
     recommendations = recommended_memory_enhancement_models("openai", catalog=_catalog(), limit=5)
 
-    assert [model.model_id for model in recommendations] == ["gpt-4o-mini", "expensive"]
+    assert [model.model_id for model in recommendations] == ["gpt-5.3-codex-spark", "gpt-4o-mini", "expensive"]
     assert recommendations[0].estimated_memory_job_cost is not None
     assert default_memory_enhancement_model("anthropic", catalog=_catalog()) == "claude-haiku-4-5"
     assert default_memory_enhancement_model("google", catalog=_catalog()) == "gemini-3-flash-preview"
