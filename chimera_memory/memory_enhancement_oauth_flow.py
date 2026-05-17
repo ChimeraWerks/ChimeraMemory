@@ -16,6 +16,8 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from .memory_enhancement_credentials import MemoryEnhancementCredentialResolutionError, ProtocolValidationError
 from .memory_enhancement_oauth import (
     ANTHROPIC_OAUTH_CLIENT_ID,
@@ -253,7 +255,7 @@ def submit_memory_enhancement_oauth_flow(
         credential = _credential_from_authorization_payload(
             state,
             payload,
-            source="browser:anthropic_pkce",
+            source="manual:hermes_pkce",
             transport="anthropic_oauth",
         )
     elif provider_id == "google":
@@ -370,7 +372,7 @@ def poll_memory_enhancement_oauth_flow(
     credential = _credential_from_authorization_payload(
         state,
         token_payload,
-        source="browser:openai_device",
+        source="device_code",
         transport="openai_codex",
         base_url=OPENAI_CODEX_BASE_URL,
     )
@@ -426,19 +428,41 @@ def _post_json(
     timeout_seconds: int,
     pending_statuses: set[int] | None = None,
 ) -> Mapping[str, Any]:
+    headers_payload = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        **dict(headers or {}),
+    }
+    if opener is None:
+        try:
+            with httpx.Client(timeout=httpx.Timeout(float(timeout_seconds))) as client:
+                response = client.post(url, json=dict(payload), headers=headers_payload)
+        except httpx.HTTPError as exc:
+            raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth authorization unavailable") from exc
+        if pending_statuses and response.status_code in pending_statuses:
+            return {"_pending": True}
+        if response.status_code in {400, 401, 403}:
+            raise MemoryEnhancementCredentialResolutionError(
+                "memory enhancement oauth authorization rejected; re-run setup"
+            )
+        if response.status_code >= 400:
+            raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth authorization unavailable")
+        try:
+            parsed = response.json()
+        except ValueError as exc:
+            raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth response unavailable") from exc
+        if not isinstance(parsed, Mapping):
+            raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth response unavailable")
+        return parsed
+
     request = urllib.request.Request(
         url,
         data=json.dumps(dict(payload)).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            **dict(headers or {}),
-        },
+        headers=headers_payload,
         method="POST",
     )
-    target = opener or urllib.request.urlopen
     try:
-        response = target(request, timeout=timeout_seconds)
+        response = opener(request, timeout=timeout_seconds)
         if hasattr(response, "__enter__"):
             with response as handle:
                 raw = handle.read()

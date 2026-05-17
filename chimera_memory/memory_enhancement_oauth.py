@@ -19,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 from .memory_enhancement_credentials import (
     MemoryEnhancementCredentialRef,
     MemoryEnhancementCredentialResolutionError,
@@ -1029,19 +1031,41 @@ def _post_form_json(
     timeout_seconds: int,
     operation: str = "refresh",
 ) -> Mapping[str, Any]:
+    headers_payload = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        **dict(headers or {}),
+    }
+    if opener is None:
+        try:
+            with httpx.Client(timeout=httpx.Timeout(float(timeout_seconds))) as client:
+                response = client.post(url, data=dict(data), headers=headers_payload)
+        except httpx.HTTPError as exc:
+            raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth refresh unavailable") from exc
+        if response.status_code >= 400:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            raise MemoryEnhancementCredentialResolutionError(
+                _oauth_http_status_message(response.status_code, payload, operation=operation)
+            )
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth refresh response unavailable") from exc
+        if not isinstance(payload, Mapping):
+            raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth refresh response unavailable")
+        return payload
+
     encoded = urllib.parse.urlencode(dict(data)).encode("utf-8")
     request = urllib.request.Request(
         url,
         data=encoded,
-        headers={
-            "Content-Type": "application/x-www-form-urlencoded",
-            **dict(headers or {}),
-        },
+        headers=headers_payload,
         method="POST",
     )
-    target = opener or urllib.request.urlopen
     try:
-        response = target(request, timeout=timeout_seconds)
+        response = opener(request, timeout=timeout_seconds)
         if hasattr(response, "__enter__"):
             with response as handle:
                 raw = handle.read()
@@ -1058,6 +1082,20 @@ def _post_form_json(
     if not isinstance(payload, Mapping):
         raise MemoryEnhancementCredentialResolutionError("memory enhancement oauth refresh response unavailable")
     return payload
+
+
+def _oauth_http_status_message(status_code: int, payload: Mapping[str, Any], *, operation: str) -> str:
+    oauth_error = _oauth_payload_error_code(payload)
+    action = "authorization" if operation == "authorization" else "refresh"
+    if oauth_error == "refresh_token_reused":
+        return "memory enhancement oauth refresh token reused; close other clients and re-run setup"
+    if oauth_error in {"invalid_grant", "invalid_token", "invalid_request"}:
+        return f"memory enhancement oauth {action} rejected; re-run setup"
+    if status_code in {400, 401, 403}:
+        return f"memory enhancement oauth {action} rejected; re-run setup"
+    if status_code == 429:
+        return f"memory enhancement oauth {action} rate limited"
+    return f"memory enhancement oauth {action} unavailable"
 
 
 def _oauth_http_error_message(exc: urllib.error.HTTPError, *, operation: str) -> str:
@@ -1085,6 +1123,10 @@ def _oauth_http_error_code(exc: urllib.error.HTTPError) -> str:
         payload = json.loads(raw_body.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError):
         return ""
+    return _oauth_payload_error_code(payload)
+
+
+def _oauth_payload_error_code(payload: object) -> str:
     if not isinstance(payload, Mapping):
         return ""
     value = payload.get("error")
