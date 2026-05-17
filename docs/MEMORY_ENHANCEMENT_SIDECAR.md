@@ -1,8 +1,9 @@
 # Memory Enhancement Sidecar
 
-Status: Sidecar, queue, provider policy, OAuth transport plumbing, and
-shadow-mode pilot wiring exist. Enhancement remains optional and does not
-rewrite authoritative memory files automatically.
+Status: Sidecar, queue, provider policy, OAuth transport plumbing, authored
+writeback, generated entity-wiki cache, and shadow-mode pilot wiring exist.
+Enhancement remains optional and does not rewrite authoritative memory files
+automatically.
 
 This document defines the planned sidecar that can enrich ChimeraMemory captures
 with structured metadata while preserving CM's local-first core. It lifts the
@@ -89,7 +90,7 @@ raw credentials.
 
 Default priority order:
 
-1. `openai` with model `gpt-4o-mini`
+1. `openai` with model `gpt-5.3-codex-spark`
 2. `anthropic` with model `claude-haiku-4-5`
 3. `google` with model `gemini-3-flash-preview` (user-facing label: Gemini)
 4. `openrouter` with model `openai/gpt-4o-mini`
@@ -185,6 +186,15 @@ Default budget caps:
 - `100000` calls per month hard cap
 - `30` second timeout
 
+Runtime guards now enforce both process and batch boundaries:
+
+- `CHIMERA_MEMORY_ENHANCEMENT_MAX_CALLS` is a process-local hard LLM call cap.
+- `CHIMERA_MEMORY_ENHANCEMENT_MAX_LLM_CALLS_PER_RUN` is a per-run hard call cap.
+- `CHIMERA_MEMORY_ENHANCEMENT_MAX_RUN_SECONDS` is a wall-clock batch budget.
+
+Cost-cap stops release claimed-but-unprocessed jobs instead of marking them
+failed.
+
 Bounded failure categories:
 
 - `auth_error`
@@ -217,6 +227,31 @@ The runner:
 CM does not resolve raw OAuth tokens in this runner. A host application such as
 PersonifyAgents can inject a client that resolves scoped credentials from its
 own secret store and performs the provider-specific call.
+
+## Generated Synthesis Artifacts
+
+Generated synthesis is a cached view, not the source of truth. This matters for
+entity wiki pages, dossier-like summaries, and future digest artifacts.
+
+Default retrieval paths exclude frontmatter with:
+
+```yaml
+exclude_from_default_search: true
+```
+
+`memory_search`, `memory_query`, and `memory_recall` all default to excluding
+those rows. Callers must opt in with `include_synthesis=true` when they want
+generated summaries included. This mirrors OB1's dossier pollution warning but
+enforces the read-side filter in CM.
+
+`memory_entity_wiki_generate` currently supports:
+
+- `file`: writes a regenerable markdown wiki page to `./wikis` or a caller
+  supplied directory.
+- `entity-metadata`: caches the generated page on `memory_entities.metadata`.
+
+`thought` or memory-file dossier output is intentionally deferred until every
+write path carries the synthesis flag and every read path opts out by default.
 
 Failure storage is intentionally narrow. Raw provider stderr, exception text,
 request content, and credential values do not get written to the queue. The job
