@@ -218,6 +218,67 @@ def test_index_file_syncs_memory_payload_artifacts(tmp_path: Path) -> None:
     assert memory_artifact_query(conn, persona="asa") == []
 
 
+def test_index_file_adds_memory_payload_to_fts(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+
+    memory_file = tmp_path / "memory.md"
+    memory_file.write_text(
+        "---\n"
+        "type: procedural\n"
+        "importance: 10\n"
+        "memory_payload:\n"
+        "  lessons:\n"
+        "    - Confidence is not evidence; verify before stating.\n"
+        "  constraints:\n"
+        "    - Do not treat vibes as telemetry.\n"
+        "  entities:\n"
+        "    topic:\n"
+        "      - verification discipline\n"
+        "---\n"
+        "Body intentionally lacks the retrieval phrase.\n",
+        encoding="utf-8",
+    )
+
+    assert index_file(conn, "asa", "memory.md", memory_file)
+
+    results = memory_search(conn, "confidence evidence telemetry", persona="asa")
+    assert [item["relative_path"] for item in results] == ["memory.md"]
+
+
+def test_index_file_refreshes_old_memory_payload_fts(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+
+    memory_file = tmp_path / "memory.md"
+    memory_file.write_text(
+        "---\n"
+        "type: procedural\n"
+        "importance: 10\n"
+        "memory_payload:\n"
+        "  lessons:\n"
+        "    - Structured payload search term.\n"
+        "---\n"
+        "Body only.\n",
+        encoding="utf-8",
+    )
+
+    assert index_file(conn, "asa", "memory.md", memory_file)
+    file_id = conn.execute("SELECT id FROM memory_files WHERE relative_path = ?", ("memory.md",)).fetchone()[0]
+    conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (file_id,))
+    conn.execute(
+        """
+        INSERT INTO memory_fts (rowid, path, persona, relative_path, content, fm_type, fm_tags, fm_about)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (file_id, str(memory_file).replace("\\", "/"), "asa", "memory.md", "Body only.", "procedural", "[]", ""),
+    )
+
+    assert index_file(conn, "asa", "memory.md", memory_file)
+    results = memory_search(conn, "structured payload search", persona="asa")
+    assert [item["relative_path"] for item in results] == ["memory.md"]
+
+
 def test_idempotency_key_is_partial_unique_and_content_fingerprint_accepts_duplicates() -> None:
     conn = sqlite3.connect(":memory:")
     init_memory_tables(conn)

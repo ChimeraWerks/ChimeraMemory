@@ -243,6 +243,70 @@ def _sync_memory_provenance_indexes(
     _sync_memory_artifacts(conn, file_id=file_id, persona=persona, frontmatter=frontmatter)
 
 
+_MEMORY_PAYLOAD_INDEX_FIELDS = (
+    "memory_id",
+    "memory_type",
+    "decisions",
+    "lessons",
+    "constraints",
+    "next_steps",
+    "failures",
+    "outputs",
+    "unresolved_questions",
+    "entities",
+    "artifacts",
+)
+_MEMORY_PAYLOAD_INDEX_MARKER = "zzpayloadindexv1"
+
+
+def _flatten_memory_payload_value(value: object, *, depth: int = 0) -> list[str]:
+    if depth > 4 or value is None:
+        return []
+    if isinstance(value, str):
+        text = value.strip()
+        return [text] if text else []
+    if isinstance(value, (int, float, bool)):
+        return [str(value)]
+    if isinstance(value, Mapping):
+        parts: list[str] = []
+        for key, child in value.items():
+            child_parts = _flatten_memory_payload_value(child, depth=depth + 1)
+            for child_text in child_parts:
+                parts.append(f"{key}: {child_text}")
+        return parts
+    if isinstance(value, list):
+        parts = []
+        for child in value:
+            parts.extend(_flatten_memory_payload_value(child, depth=depth + 1))
+        return parts
+    return []
+
+
+def memory_payload_index_text(frontmatter: Mapping[str, object], *, max_chars: int = 6000) -> str:
+    """Return authored structured payload text for retrieval indexing."""
+    payload = frontmatter.get("memory_payload")
+    if not isinstance(payload, Mapping):
+        return ""
+
+    parts: list[str] = []
+    for field in _MEMORY_PAYLOAD_INDEX_FIELDS:
+        values = _flatten_memory_payload_value(payload.get(field))
+        label = field.removeprefix("memory_").replace("_", " ")
+        for value in values:
+            parts.append(f"{label}: {value}")
+
+    return " ".join(parts)[:max_chars]
+
+
+def _memory_payload_index_stale(conn: sqlite3.Connection, *, file_id: int, payload_text: str) -> bool:
+    if not payload_text:
+        return False
+    row = conn.execute("SELECT content FROM memory_fts WHERE rowid = ?", (file_id,)).fetchone()
+    if row is None:
+        return True
+    return _MEMORY_PAYLOAD_INDEX_MARKER not in str(row[0])
+
+
 def normalize_for_fts(text: str) -> str:
     """Expand text for better FTS5 matching.
 
@@ -382,10 +446,26 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
     path_str = str(full_path).replace("\\", "/")
 
     fm, body = parse_frontmatter(content)
+    payload_text = memory_payload_index_text(fm)
     idempotency_key = str(fm.get("idempotency_key") or "").strip() or None
     row = conn.execute(
         "SELECT id, content_hash, idempotency_key FROM memory_files WHERE path = ?", (path_str,)
     ).fetchone()
+
+    if row and row[1] == content_hash and row[2] == idempotency_key:
+        if _memory_payload_index_stale(conn, file_id=int(row[0]), payload_text=payload_text):
+            conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (row[0],))
+        else:
+            _sync_memory_provenance_indexes(
+                conn,
+                file_id=int(row[0]),
+                persona=persona,
+                frontmatter=fm,
+            )
+            return False
+
+    elif row:
+        conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (row[0],))
 
     if row and row[1] == content_hash and row[2] == idempotency_key:
         _sync_memory_provenance_indexes(
@@ -394,16 +474,19 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
             persona=persona,
             frontmatter=fm,
         )
-        return False
+        file_id = row[0]
+        tags_json = json.dumps(fm.get("tags", []))
+        payload_index_only = True
+    else:
+        tags_json = json.dumps(fm.get("tags", []))
+        payload_index_only = False
 
-    tags_json = json.dumps(fm.get("tags", []))
     governance = governance_from_frontmatter(fm)
     exclude_from_default_search = _frontmatter_bool(fm.get("exclude_from_default_search"), False)
     now = time.time()
 
-    if row:
+    if row and not payload_index_only:
         file_id = row[0]
-        conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (file_id,))
         conn.execute("""
             UPDATE memory_files SET
                 content_hash=?, indexed_at=?,
@@ -431,7 +514,7 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
             exclude_from_default_search,
             file_id
         ))
-    else:
+    elif not row:
         cursor = conn.execute("""
             INSERT INTO memory_files (
                 path, persona, relative_path, content_hash, indexed_at,
@@ -460,7 +543,8 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
         ))
         file_id = cursor.lastrowid
 
-    fts_body = normalize_for_fts(body)
+    index_text = body if not payload_text else f"{body}\n\n{_MEMORY_PAYLOAD_INDEX_MARKER} {payload_text}"
+    fts_body = normalize_for_fts(index_text)
     conn.execute("""
         INSERT INTO memory_fts (rowid, path, persona, relative_path, content, fm_type, fm_tags, fm_about)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -539,8 +623,9 @@ def embed_memory_files(conn: sqlite3.Connection, file_ids: list[int]):
         path = Path(r[1])
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
-            _, body = parse_frontmatter(content)
+            frontmatter, body = parse_frontmatter(content)
         except OSError:
+            frontmatter = {}
             body = ""
 
         text_parts = [f"persona:{r[2]}", f"file:{r[3]}"]
@@ -553,6 +638,9 @@ def embed_memory_files(conn: sqlite3.Connection, file_ids: list[int]):
             if tags:
                 text_parts.append(f"tags:{','.join(str(t) for t in tags)}")
         text_parts.append(body[:2000])
+        payload_text = memory_payload_index_text(frontmatter, max_chars=2000)
+        if payload_text:
+            text_parts.append(f"memory_payload:{payload_text}")
         texts.append(" ".join(text_parts))
         ids.append(r[0])
 
