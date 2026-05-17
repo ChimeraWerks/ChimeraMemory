@@ -71,7 +71,7 @@ def test_entity_index_derives_people_topics_projects_and_tools(tmp_path: Path) -
     assert memory_topic[0]["file_count"] == 2
 
     links = memory_file_entity_links(conn, file_path="charles-memory.md")
-    assert {link["canonical_name"] for link in links} == {"Charles", "memory", "PA", "Codex"}
+    assert {link["canonical_name"] for link in links} == {"Charles", "memory", "PersonifyAgents", "Codex"}
 
     events = memory_audit_query(conn, event_type="memory_entities_indexed", persona="asa")
     assert len(events) == 1
@@ -100,7 +100,7 @@ def test_entity_connections_use_shared_file_evidence(tmp_path: Path) -> None:
 
     connections = memory_entity_connections(conn, entity_name="Charles", entity_type="person")
 
-    assert {row["canonical_name"] for row in connections} == {"PA", "Codex"}
+    assert {row["canonical_name"] for row in connections} == {"PersonifyAgents", "Codex"}
     for row in connections:
         assert row["overlap_count"] == 1
         assert row["evidence_paths"] == ["pa.md"]
@@ -149,6 +149,42 @@ def test_entity_index_links_authored_memory_payload_entities(tmp_path: Path) -> 
     assert by_name["Charles"]["source"] == "memory_payload"
     assert by_name["ChimeraMemory"]["mention_role"] == "mentioned"
     assert by_name["ChimeraMemory"]["evidence"] == "memory_payload.entities.projects"
+
+
+def test_entity_index_canonicalizes_common_legacy_tag_aliases(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+
+    memory_file = tmp_path / "aliases.md"
+    _write_memory(
+        memory_file,
+        [
+            "type: procedural",
+            "importance: 9",
+            "tags:",
+            "  - asa",
+            "  - ceo",
+            "  - chimera-memory",
+            "  - pa",
+            "  - hermes",
+            "  - ceo-feedback",
+        ],
+        "Legacy tags should not fragment the entity graph.",
+    )
+    assert index_file(conn, "sarah", "procedural/aliases.md", memory_file)
+    memory_entity_index(conn, persona="sarah")
+
+    links = memory_file_entity_links(conn, file_path="aliases.md")
+    by_name = {link["canonical_name"]: link for link in links}
+
+    assert by_name["Asa"]["entity_type"] == "person"
+    assert by_name["Charles"]["entity_type"] == "person"
+    assert by_name["ChimeraMemory"]["entity_type"] == "project"
+    assert by_name["Hermes"]["entity_type"] == "project"
+    assert by_name["ceo-feedback"]["entity_type"] == "topic"
+
+    assert memory_entity_query(conn, query="ceo", entity_type="person", persona="sarah")[0]["canonical_name"] == "Charles"
+    assert memory_entity_query(conn, query="pa", entity_type="project", persona="sarah")[0]["canonical_name"] == "PersonifyAgents"
 
 
 def test_typed_entity_edge_upsert_accumulates_support() -> None:

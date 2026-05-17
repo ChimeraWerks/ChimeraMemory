@@ -44,6 +44,22 @@ _PREFIX_TO_TYPE = {
     "date": "date",
     "dates": "date",
 }
+_ENTITY_OVERRIDES = {
+    "asa": ("person", "Asa"),
+    "sarah": ("person", "Sarah"),
+    "charles": ("person", "Charles"),
+    "ceo": ("person", "Charles"),
+    "chimera memory": ("project", "ChimeraMemory"),
+    "chimera memory mcp": ("project", "ChimeraMemory"),
+    "chimeramemory": ("project", "ChimeraMemory"),
+    "chimera-memory": ("project", "ChimeraMemory"),
+    "personifyagents": ("project", "PersonifyAgents"),
+    "personify agents": ("project", "PersonifyAgents"),
+    "pa": ("project", "PersonifyAgents"),
+    "hermes": ("project", "Hermes"),
+    "hermes agent": ("project", "Hermes"),
+    "hermes codebase": ("project", "Hermes"),
+}
 
 
 def normalize_entity_name(name: str) -> str:
@@ -369,6 +385,18 @@ def _tag_to_entity(tag: str) -> tuple[str, str]:
     return entity_type, value.strip() or raw
 
 
+def _canonical_index_entity(entity_type: str, name: str) -> tuple[str, str]:
+    clean_type = _clean_entity_type(entity_type)
+    raw_name = str(name or "").strip()
+    override = _ENTITY_OVERRIDES.get(normalize_entity_name(raw_name))
+    if override is None:
+        return clean_type, raw_name
+    override_type, canonical = override
+    if clean_type in {"topic", "unknown", "entity"} or clean_type == override_type:
+        return override_type, canonical
+    return clean_type, canonical
+
+
 def _path_entity_name(relative_path: str) -> str:
     stem = Path(relative_path).stem.replace("_", " ").replace("-", " ").strip()
     return _WHITESPACE_RE.sub(" ", stem)
@@ -451,15 +479,19 @@ def index_entities_for_memory_file(conn: sqlite3.Connection, file_id: int) -> li
     links = []
     seen_keys = set()
     for entity_type, name, role, evidence in derived:
+        raw_name = str(name or "").strip()
+        entity_type, name = _canonical_index_entity(entity_type, name)
         key = (_clean_entity_type(entity_type), normalize_entity_name(name), _clean_mention_role(role))
         if key in seen_keys:
             continue
         seen_keys.add(key)
         source = "memory_payload" if str(evidence).startswith("memory_payload.") else "frontmatter"
+        aliases = [raw_name] if raw_name and normalize_entity_name(raw_name) != normalize_entity_name(name) else []
         entity = upsert_memory_entity(
             conn,
             entity_type=entity_type,
             canonical_name=name,
+            aliases=aliases,
             source=source,
             metadata={"persona": row[2]},
             commit=False,
