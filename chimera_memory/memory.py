@@ -66,6 +66,7 @@ from .memory_governance import (
 from .memory_live_retrieval import memory_live_retrieval_check
 from .memory_legacy_migration import (
     memory_legacy_frontmatter_retrofit as _memory_legacy_frontmatter_retrofit,
+    memory_legacy_frontmatter_review_action as _memory_legacy_frontmatter_review_action,
     memory_legacy_migration_plan,
 )
 from .memory_profile_export import memory_profile_export
@@ -1369,6 +1370,81 @@ def memory_legacy_frontmatter_retrofit(
         target_id=str(file_id or result["relative_path"]),
         payload=audit_payload,
         actor=actor,
+        commit=False,
+    )
+    conn.commit()
+    result.update({"indexed": indexed, "file_id": file_id})
+    return result
+
+
+def memory_legacy_frontmatter_review_action(
+    conn: sqlite3.Connection,
+    personas_dir: Path,
+    *,
+    persona: str,
+    relative_path: str,
+    action: str,
+    reviewer: str = "user",
+    notes: str = "",
+    write: bool = False,
+) -> dict:
+    """Preview or write a durable frontmatter review action for a migrated memory."""
+    result = _memory_legacy_frontmatter_review_action(
+        personas_dir,
+        persona=persona,
+        relative_path=relative_path,
+        action=action,
+        reviewer=reviewer,
+        notes=notes,
+        write=write,
+    )
+    if not result.get("ok"):
+        return result
+
+    audit_payload = {
+        "schema_version": result["schema_version"],
+        "relative_path": result["relative_path"],
+        "action": result["action"],
+        "write": bool(write),
+        "body_preserved": bool(result.get("body_preserved")),
+        "body_sha256": result.get("body_sha256"),
+        "before": result.get("before", {}),
+        "after": result.get("after", {}),
+    }
+    if not write:
+        record_memory_audit_event(
+            conn,
+            "memory_legacy_frontmatter_review_planned",
+            persona=persona,
+            target_kind="memory_file",
+            target_id=result["relative_path"],
+            payload=audit_payload,
+            actor=reviewer or "user",
+        )
+        return result
+
+    full_path = Path(result["path"])
+    indexed = index_file(conn, persona, result["relative_path"], full_path)
+    row = conn.execute(
+        "SELECT id FROM memory_files WHERE path = ?",
+        (str(full_path).replace("\\", "/"),),
+    ).fetchone()
+    file_id = row[0] if row else None
+    audit_payload.update(
+        {
+            "path": str(full_path).replace("\\", "/"),
+            "indexed": indexed,
+            "file_id": file_id,
+        }
+    )
+    record_memory_audit_event(
+        conn,
+        "memory_legacy_frontmatter_review_written",
+        persona=persona,
+        target_kind="memory_file",
+        target_id=str(file_id or result["relative_path"]),
+        payload=audit_payload,
+        actor=reviewer or "user",
         commit=False,
     )
     conn.commit()

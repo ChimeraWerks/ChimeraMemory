@@ -1790,6 +1790,51 @@ def create_server():
         )
 
     @server.tool()
+    def memory_legacy_frontmatter_review_action(
+        persona: str,
+        relative_path: str,
+        action: str,
+        reviewer: str = "user",
+        notes: str = "",
+        personas_dir: str = "",
+        write: bool = False,
+    ) -> str:
+        """Preview or write a durable frontmatter review action for a migrated memory."""
+        from .memory import memory_legacy_frontmatter_review_action as _review_action
+
+        root = personas_dir.strip()
+        if not root:
+            resolved = resolve_memory_whereami()
+            root = str(resolved.get("personas_dir") or "")
+        if not root:
+            return "No personas_dir configured."
+
+        result = _review_action(
+            _get_memory_conn(),
+            Path(root),
+            persona=persona,
+            relative_path=relative_path,
+            action=action,
+            reviewer=reviewer,
+            notes=notes,
+            write=write,
+        )
+        if not result.get("ok"):
+            return f"Legacy frontmatter review failed: {result.get('error', 'unknown error')}"
+        after = result.get("after", {})
+        if not result.get("written"):
+            return (
+                "Legacy frontmatter review preview only. Re-run with write=true to persist. "
+                f"path={result['relative_path']} action={result['action']} "
+                f"body_preserved={result['body_preserved']} review={after.get('review_status')}"
+            )
+        return (
+            f"Reviewed legacy memory {result['relative_path']} ({persona}). "
+            f"action={result['action']} body_preserved={result['body_preserved']} "
+            f"review={after.get('review_status')} indexed={result.get('indexed')}"
+        )
+
+    @server.tool()
     def memory_source_refs(
         persona: str = "",
         source_kind: str = "",

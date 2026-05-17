@@ -17,6 +17,7 @@ from .memory_frontmatter import parse_frontmatter
 
 LEGACY_MIGRATION_PLAN_SCHEMA_VERSION = "chimera-memory.legacy-migration-plan.v1"
 LEGACY_FRONTMATTER_RETROFIT_SCHEMA_VERSION = "chimera-memory.legacy-frontmatter-retrofit.v1"
+LEGACY_FRONTMATTER_REVIEW_SCHEMA_VERSION = "chimera-memory.legacy-frontmatter-review.v1"
 
 _SECURITY_RE = re.compile(
     r"\b(auth|oauth|credential|credentials|token|secret|password|api[-_ ]?key|"
@@ -26,6 +27,67 @@ _SECURITY_RE = re.compile(
 _MANUAL_TYPES = {"procedural", "entity", "social", "semantic"}
 _MEDIUM_MANUAL_TYPES = {"reflection", "feedback", "scoping"}
 _DRAFTABLE_TYPES = {"episode", "episodic", "reading-notes"}
+_FRONTMATTER_REVIEW_UPDATES = {
+    "confirm": {
+        "provenance_status": "user_confirmed",
+        "review_status": "confirmed",
+        "can_use_as_instruction": True,
+        "can_use_as_evidence": True,
+        "requires_user_confirmation": False,
+    },
+    "evidence_only": {
+        "review_status": "evidence_only",
+        "can_use_as_instruction": False,
+        "can_use_as_evidence": True,
+        "requires_user_confirmation": False,
+    },
+    "edit": {
+        "review_status": "pending",
+        "can_use_as_instruction": False,
+        "can_use_as_evidence": True,
+        "requires_user_confirmation": True,
+    },
+    "restrict_scope": {
+        "review_status": "restricted",
+        "sensitivity_tier": "restricted",
+        "can_use_as_instruction": False,
+        "requires_user_confirmation": False,
+    },
+    "mark_stale": {
+        "status": "stale",
+        "lifecycle_status": "stale",
+        "review_status": "stale",
+        "can_use_as_instruction": False,
+        "requires_user_confirmation": False,
+    },
+    "merge": {
+        "lifecycle_status": "superseded",
+        "review_status": "merged",
+        "can_use_as_instruction": False,
+        "requires_user_confirmation": False,
+    },
+    "reject": {
+        "lifecycle_status": "rejected",
+        "review_status": "rejected",
+        "can_use_as_instruction": False,
+        "can_use_as_evidence": False,
+        "requires_user_confirmation": False,
+    },
+    "dispute": {
+        "provenance_status": "disputed",
+        "lifecycle_status": "disputed",
+        "review_status": "pending",
+        "can_use_as_instruction": False,
+        "requires_user_confirmation": True,
+    },
+    "supersede": {
+        "provenance_status": "superseded",
+        "lifecycle_status": "superseded",
+        "review_status": "stale",
+        "can_use_as_instruction": False,
+        "requires_user_confirmation": False,
+    },
+}
 
 
 class _NoAliasSafeDumper(yaml.SafeDumper):
@@ -198,6 +260,115 @@ def memory_legacy_frontmatter_retrofit(
     return result
 
 
+def memory_legacy_frontmatter_review_action(
+    personas_dir: str | Path,
+    *,
+    persona: str,
+    relative_path: str,
+    action: str,
+    reviewer: str = "user",
+    notes: str = "",
+    write: bool = False,
+    reviewed_at: str | None = None,
+) -> dict[str, Any]:
+    """Preview or write a durable frontmatter review action for a migrated memory."""
+    persona = str(persona or "").strip()
+    if not persona:
+        return {"ok": False, "error": "persona required"}
+    action = str(action or "").strip()
+    if action not in _FRONTMATTER_REVIEW_UPDATES:
+        return {
+            "ok": False,
+            "error": "unsupported review action",
+            "action": action,
+            "supported_actions": sorted(_FRONTMATTER_REVIEW_UPDATES),
+        }
+
+    resolved = _resolve_memory_file(Path(personas_dir).expanduser(), persona=persona, relative_path=relative_path)
+    if not resolved["ok"]:
+        return resolved
+    target = resolved["path"]
+    relative_text = resolved["relative_path"]
+
+    original = target.read_text(encoding="utf-8")
+    split = _split_frontmatter_preserving_body(original)
+    if not split["ok"]:
+        return {"ok": False, "error": split["error"], "relative_path": relative_text}
+
+    frontmatter = dict(split["frontmatter"])
+    body = str(split["body"])
+    if not isinstance(frontmatter.get("memory_payload"), Mapping):
+        return {"ok": False, "error": "memory_payload required", "relative_path": relative_text}
+    legacy_migration = frontmatter.get("legacy_migration")
+    if not isinstance(legacy_migration, Mapping):
+        return {"ok": False, "error": "legacy_migration metadata required", "relative_path": relative_text}
+
+    body_sha256 = hashlib.sha256(body.encode("utf-8")).hexdigest()
+    expected_body_sha256 = str(legacy_migration.get("body_sha256") or "").strip()
+    if expected_body_sha256 and expected_body_sha256 != body_sha256:
+        return {
+            "ok": False,
+            "error": "legacy migration body hash mismatch",
+            "relative_path": relative_text,
+            "body_sha256": body_sha256,
+            "expected_body_sha256": expected_body_sha256,
+        }
+
+    reviewed = dict(frontmatter)
+    before = _review_snapshot(frontmatter)
+    reviewed.update(_FRONTMATTER_REVIEW_UPDATES[action])
+    reviewed_legacy = dict(legacy_migration)
+    reviewed_legacy.update(
+        {
+            "payload_review_status": reviewed.get("review_status"),
+            "review_action": action,
+            "reviewed_at": reviewed_at or _utc_now(),
+            "reviewed_by": reviewer or "user",
+        }
+    )
+    if notes:
+        reviewed_legacy["review_notes"] = notes
+    reviewed["legacy_migration"] = reviewed_legacy
+
+    updated = _render_frontmatter_markdown(reviewed, body)
+    verify = _split_frontmatter_preserving_body(updated)
+    if not verify["ok"]:
+        return {"ok": False, "error": "rendered review frontmatter is invalid", "relative_path": relative_text}
+    body_sha256_after = hashlib.sha256(str(verify["body"]).encode("utf-8")).hexdigest()
+    if body_sha256_after != body_sha256 or str(verify["body"]) != body:
+        return {
+            "ok": False,
+            "error": "body preservation guard failed",
+            "relative_path": relative_text,
+            "body_sha256_before": body_sha256,
+            "body_sha256_after": body_sha256_after,
+        }
+
+    result = {
+        "ok": True,
+        "schema_version": LEGACY_FRONTMATTER_REVIEW_SCHEMA_VERSION,
+        "persona": persona,
+        "relative_path": relative_text,
+        "path": str(target),
+        "action": action,
+        "reviewer": reviewer or "user",
+        "written": False,
+        "body_preserved": True,
+        "body_sha256": body_sha256,
+        "before": before,
+        "after": _review_snapshot(reviewed),
+        "content_sha256_before": hashlib.sha256(original.encode("utf-8")).hexdigest(),
+        "content_sha256_after": hashlib.sha256(updated.encode("utf-8")).hexdigest(),
+    }
+    if not write:
+        result["preview_frontmatter"] = reviewed
+        return result
+
+    target.write_text(updated, encoding="utf-8", newline="\n")
+    result["written"] = True
+    return result
+
+
 def _select_persona_roots(root: Path, persona: str | None) -> list[tuple[str, Path]]:
     selected = str(persona or "").strip()
     if selected:
@@ -221,6 +392,31 @@ def _select_persona_roots(root: Path, persona: str | None) -> list[tuple[str, Pa
             if candidate.is_dir() and (candidate / "memory").is_dir():
                 roots.append((candidate.name, candidate))
     return roots
+
+
+def _resolve_memory_file(root: Path, *, persona: str, relative_path: str) -> dict[str, Any]:
+    persona_root = resolve_persona_root(root, persona)
+    if persona_root is None:
+        return {"ok": False, "error": "persona root not found", "persona": persona}
+
+    relative_text = str(relative_path or "").replace("\\", "/").lstrip("/")
+    if not relative_text:
+        return {"ok": False, "error": "relative_path required"}
+    relative = Path(relative_text)
+    if relative.is_absolute() or any(part == ".." for part in relative.parts):
+        return {"ok": False, "error": "relative_path escapes persona root", "relative_path": relative_text}
+
+    persona_root_resolved = persona_root.resolve()
+    target = (persona_root_resolved / relative).resolve()
+    try:
+        target.relative_to(persona_root_resolved)
+    except ValueError:
+        return {"ok": False, "error": "relative_path escapes persona root", "relative_path": relative_text}
+    if target.suffix.lower() != ".md":
+        return {"ok": False, "error": "legacy memory file must be a markdown file", "relative_path": relative_text}
+    if not target.exists():
+        return {"ok": False, "error": "legacy memory file not found", "relative_path": relative_text}
+    return {"ok": True, "path": target, "relative_path": relative_text, "persona_root": persona_root_resolved}
 
 
 def _split_frontmatter_preserving_body(text: str) -> dict[str, Any]:
@@ -297,6 +493,18 @@ def _render_frontmatter_markdown(frontmatter: Mapping[str, Any], body: str) -> s
         default_flow_style=False,
     ).strip()
     return f"---\n{dumped}\n---\n{body}"
+
+
+def _review_snapshot(frontmatter: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "provenance_status": frontmatter.get("provenance_status"),
+        "lifecycle_status": frontmatter.get("lifecycle_status"),
+        "review_status": frontmatter.get("review_status"),
+        "sensitivity_tier": frontmatter.get("sensitivity_tier"),
+        "can_use_as_instruction": bool(frontmatter.get("can_use_as_instruction")),
+        "can_use_as_evidence": bool(frontmatter.get("can_use_as_evidence", True)),
+        "requires_user_confirmation": bool(frontmatter.get("requires_user_confirmation")),
+    }
 
 
 def _utc_now() -> str:

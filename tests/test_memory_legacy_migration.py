@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from chimera_memory.memory_legacy_migration import (
+    memory_legacy_frontmatter_review_action,
     memory_legacy_frontmatter_retrofit,
     memory_legacy_migration_plan,
 )
@@ -153,3 +154,71 @@ def test_legacy_frontmatter_retrofit_rejects_escape_and_existing_payload(tmp_pat
     )
     assert existing["ok"] is False
     assert existing["error"] == "memory_payload already exists"
+
+
+def test_legacy_frontmatter_review_action_confirms_durably_and_preserves_body(tmp_path: Path) -> None:
+    personas_dir = tmp_path / "personas"
+    target = personas_dir / "researcher" / "sarah" / "memory" / "procedural" / "rule.md"
+    original_body = "Rule body stays untouched.\n"
+    _write(target, "---\ntype: procedural\nimportance: 9\n---" + original_body)
+    migrated = memory_legacy_frontmatter_retrofit(
+        personas_dir,
+        persona="sarah",
+        relative_path="memory/procedural/rule.md",
+        memory_payload={"lessons": [{"teaching": "Review confirms instruction use."}]},
+        write=True,
+        migrated_at="2026-05-17T00:00:00Z",
+    )
+    assert migrated["ok"] is True
+
+    preview = memory_legacy_frontmatter_review_action(
+        personas_dir,
+        persona="sarah",
+        relative_path="memory/procedural/rule.md",
+        action="confirm",
+        reviewer="sarah",
+        reviewed_at="2026-05-17T01:00:00Z",
+    )
+    assert preview["ok"] is True
+    assert preview["written"] is False
+    assert preview["body_preserved"] is True
+    assert preview["after"]["review_status"] == "confirmed"
+    assert preview["after"]["can_use_as_instruction"] is True
+
+    written = memory_legacy_frontmatter_review_action(
+        personas_dir,
+        persona="sarah",
+        relative_path="memory/procedural/rule.md",
+        action="confirm",
+        reviewer="sarah",
+        notes="approved",
+        write=True,
+        reviewed_at="2026-05-17T01:00:00Z",
+    )
+
+    assert written["ok"] is True
+    assert written["written"] is True
+    updated = target.read_text(encoding="utf-8")
+    assert updated.endswith(original_body)
+    assert "review_status: confirmed" in updated
+    assert "provenance_status: user_confirmed" in updated
+    assert "can_use_as_instruction: true" in updated
+    assert "requires_user_confirmation: false" in updated
+    assert "payload_review_status: confirmed" in updated
+    assert "reviewed_by: sarah" in updated
+
+
+def test_legacy_frontmatter_review_action_rejects_unmigrated_file(tmp_path: Path) -> None:
+    personas_dir = tmp_path / "personas"
+    target = personas_dir / "researcher" / "sarah" / "memory" / "procedural" / "plain.md"
+    _write(target, "---\ntype: procedural\nimportance: 9\n---\nBody.\n")
+
+    result = memory_legacy_frontmatter_review_action(
+        personas_dir,
+        persona="sarah",
+        relative_path="memory/procedural/plain.md",
+        action="confirm",
+    )
+
+    assert result["ok"] is False
+    assert result["error"] == "memory_payload required"
