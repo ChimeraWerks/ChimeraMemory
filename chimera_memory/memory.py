@@ -429,6 +429,45 @@ def _walk_for_files(directory: Path, persona: str, base: Path, results: list):
 
 # â”€â”€â”€ Indexing â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
+def _sync_memory_file_frontmatter_columns(
+    conn: sqlite3.Connection,
+    *,
+    file_id: int,
+    frontmatter: dict,
+    tags_json: str,
+    content_fingerprint: str,
+    idempotency_key: str | None,
+    governance: dict,
+    exclude_from_default_search: int,
+) -> None:
+    """Refresh indexed frontmatter policy columns even when file content is unchanged."""
+    conn.execute("""
+        UPDATE memory_files SET
+            fm_type=?, fm_importance=?, fm_created=?, fm_last_accessed=?,
+            fm_access_count=?, fm_status=?, fm_about=?, fm_tags=?,
+            fm_entity=?, fm_relationship_temperature=?, fm_trust_level=?,
+            fm_trend=?, fm_failure_count=?, idempotency_key=?, content_fingerprint=?,
+            fm_provenance_status=?, fm_confidence=?, fm_lifecycle_status=?,
+            fm_review_status=?, fm_sensitivity_tier=?,
+            fm_can_use_as_instruction=?, fm_can_use_as_evidence=?,
+            fm_requires_user_confirmation=?, fm_exclude_from_default_search=?
+        WHERE id=?
+    """, (
+        frontmatter.get("type"), frontmatter.get("importance"), frontmatter.get("created"),
+        frontmatter.get("last_accessed"), frontmatter.get("access_count", 0),
+        frontmatter.get("status", "active"), frontmatter.get("about"), tags_json,
+        frontmatter.get("entity"), frontmatter.get("relationship_temperature"),
+        frontmatter.get("trust_level"), frontmatter.get("trend"),
+        frontmatter.get("failure_count", 0), idempotency_key, content_fingerprint,
+        governance["provenance_status"], governance["confidence"],
+        governance["lifecycle_status"], governance["review_status"],
+        governance["sensitivity_tier"], governance["can_use_as_instruction"],
+        governance["can_use_as_evidence"], governance["requires_user_confirmation"],
+        exclude_from_default_search,
+        file_id,
+    ))
+
+
 def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
                full_path: Path, maintenance: bool = False) -> bool:
     """Index a single memory file. Returns True if new or updated.
@@ -448,6 +487,10 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
     fm, body = parse_frontmatter(content)
     payload_text = memory_payload_index_text(fm)
     idempotency_key = str(fm.get("idempotency_key") or "").strip() or None
+    tags_json = json.dumps(fm.get("tags", []))
+    governance = governance_from_frontmatter(fm)
+    exclude_from_default_search = _frontmatter_bool(fm.get("exclude_from_default_search"), False)
+    now = time.time()
     row = conn.execute(
         "SELECT id, content_hash, idempotency_key FROM memory_files WHERE path = ?", (path_str,)
     ).fetchone()
@@ -456,6 +499,16 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
         if _memory_payload_index_stale(conn, file_id=int(row[0]), payload_text=payload_text):
             conn.execute("DELETE FROM memory_fts WHERE rowid = ?", (row[0],))
         else:
+            _sync_memory_file_frontmatter_columns(
+                conn,
+                file_id=int(row[0]),
+                frontmatter=fm,
+                tags_json=tags_json,
+                content_fingerprint=content_fingerprint,
+                idempotency_key=idempotency_key,
+                governance=governance,
+                exclude_from_default_search=exclude_from_default_search,
+            )
             _sync_memory_provenance_indexes(
                 conn,
                 file_id=int(row[0]),
@@ -475,15 +528,9 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
             frontmatter=fm,
         )
         file_id = row[0]
-        tags_json = json.dumps(fm.get("tags", []))
         payload_index_only = True
     else:
-        tags_json = json.dumps(fm.get("tags", []))
         payload_index_only = False
-
-    governance = governance_from_frontmatter(fm)
-    exclude_from_default_search = _frontmatter_bool(fm.get("exclude_from_default_search"), False)
-    now = time.time()
 
     if row and not payload_index_only:
         file_id = row[0]

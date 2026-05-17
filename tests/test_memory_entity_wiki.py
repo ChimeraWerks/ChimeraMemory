@@ -113,6 +113,43 @@ def test_entity_wiki_file_mode_writes_generated_cached_view(tmp_path: Path) -> N
     assert str(fixture["hermes"]["id"]) in content
 
 
+def test_entity_wiki_file_mode_repairs_existing_index_exclusion(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+    fixture = _fixture(conn, tmp_path)
+    client = FakeWikiClient()
+    output_dir = tmp_path / "wikis"
+
+    first = memory_entity_wiki_generate(
+        conn,
+        entity_id=fixture["hermes"]["id"],
+        output_dir=str(output_dir),
+        client=client,
+        env={"CHIMERA_MEMORY_ENHANCEMENT_PROVIDER_ORDER": "dry_run"},
+    )
+    wiki_path = Path(first["path"])
+    assert index_file(conn, "asa", "wikis/hermes.md", wiki_path)
+    conn.execute(
+        "UPDATE memory_files SET fm_exclude_from_default_search = 0 WHERE path = ?",
+        (str(wiki_path.resolve()),),
+    )
+    conn.commit()
+
+    second = memory_entity_wiki_generate(
+        conn,
+        entity_id=fixture["hermes"]["id"],
+        output_dir=str(output_dir),
+        client=client,
+        env={"CHIMERA_MEMORY_ENHANCEMENT_PROVIDER_ORDER": "dry_run"},
+    )
+
+    assert second["ok"] is True
+    assert conn.execute(
+        "SELECT fm_exclude_from_default_search FROM memory_files WHERE relative_path = ?",
+        ("wikis/hermes.md",),
+    ).fetchone()[0] == 1
+
+
 def test_entity_wiki_prompt_includes_file_edges_between_linked_files(tmp_path: Path) -> None:
     conn = sqlite3.connect(":memory:")
     init_memory_tables(conn)

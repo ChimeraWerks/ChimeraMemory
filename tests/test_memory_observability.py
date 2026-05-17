@@ -70,6 +70,27 @@ def test_memory_search_excludes_generated_synthesis_by_default(tmp_path: Path) -
     assert {row["relative_path"] for row in with_synthesis} == {"atom.md", "wiki.md"}
 
 
+def test_unchanged_index_file_resyncs_frontmatter_policy_columns(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+
+    wiki = tmp_path / "wiki.md"
+    wiki.write_text(
+        "---\ntype: generated_entity_wiki\nexclude_from_default_search: true\n---\nshared synthesis marker\n",
+        encoding="utf-8",
+    )
+    assert index_file(conn, "asa", "wiki.md", wiki)
+    conn.execute("UPDATE memory_files SET fm_exclude_from_default_search = 0")
+    conn.commit()
+
+    assert index_file(conn, "asa", "wiki.md", wiki) is False
+
+    assert conn.execute(
+        "SELECT fm_exclude_from_default_search FROM memory_files WHERE relative_path = ?",
+        ("wiki.md",),
+    ).fetchone()[0] == 1
+
+
 def test_record_memory_recall_trace_handles_empty_results() -> None:
     conn = sqlite3.connect(":memory:")
     init_memory_tables(conn)

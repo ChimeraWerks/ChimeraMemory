@@ -510,6 +510,7 @@ def _emit_wiki(
     )
     if output_mode == "file":
         path = _write_wiki_file(entity, wiki_page, output_dir)
+        _mark_wiki_file_excluded(conn, path)
         record_memory_audit_event(
             conn,
             "memory_entity_wiki_generated",
@@ -582,6 +583,23 @@ def _write_wiki_file(entity: Mapping[str, Any], wiki_page: Mapping[str, Any], ou
     ]
     filepath.write_text("\n".join(frontmatter) + str(wiki_page["markdown"]).rstrip() + "\n", encoding="utf-8")
     return str(filepath)
+
+
+def _mark_wiki_file_excluded(conn: sqlite3.Connection, path: str) -> None:
+    """Keep existing indexed wiki rows out of default recall after regeneration."""
+    resolved = Path(path).resolve()
+    candidates = {str(resolved), resolved.as_posix(), str(Path(path)), Path(path).as_posix()}
+    placeholders = ",".join("?" for _ in candidates)
+    conn.execute(
+        f"""
+        UPDATE memory_files
+        SET fm_type = 'generated_entity_wiki',
+            fm_exclude_from_default_search = 1
+        WHERE path IN ({placeholders})
+        """,
+        tuple(candidates),
+    )
+    conn.commit()
 
 
 def _resolve_wiki_path(out_dir: Path, base_slug: str, entity: Mapping[str, Any]) -> Path:
