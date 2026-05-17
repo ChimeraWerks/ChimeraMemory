@@ -1764,6 +1764,34 @@ def create_server():
         return "\n".join(lines)
 
     @server.tool()
+    def memory_artifacts(
+        persona: str = "",
+        artifact_kind: str = "",
+        uri: str = "",
+        limit: int = 50,
+    ) -> str:
+        """List indexed artifact references attached to memory files."""
+        _ensure_memory_indexed()
+        from .memory import memory_artifact_query
+
+        artifacts = memory_artifact_query(
+            _get_memory_conn(),
+            persona=persona or None,
+            artifact_kind=artifact_kind or None,
+            uri=uri or None,
+            limit=limit,
+        )
+        if not artifacts:
+            return "No memory artifacts found."
+        lines = ["Memory artifacts:"]
+        for artifact in artifacts:
+            lines.append(
+                f"- {artifact['persona']}:{artifact['relative_path']} "
+                f"{artifact['artifact_kind']} {artifact.get('uri') or ''}".rstrip()
+            )
+        return "\n".join(lines)
+
+    @server.tool()
     def memory_entity_wiki_generate(
         entity_id: int = 0,
         entity_name: str = "",

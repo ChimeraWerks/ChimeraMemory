@@ -240,6 +240,25 @@ ON memory_file_source_refs(source_kind);
 CREATE INDEX IF NOT EXISTS idx_memory_file_source_refs_uri
 ON memory_file_source_refs(uri);
 
+CREATE TABLE IF NOT EXISTS memory_file_artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL REFERENCES memory_files(id) ON DELETE CASCADE,
+    persona TEXT NOT NULL,
+    artifact_kind TEXT NOT NULL,
+    uri TEXT,
+    description TEXT,
+    metadata TEXT DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_file_artifacts_file
+ON memory_file_artifacts(file_id);
+
+CREATE INDEX IF NOT EXISTS idx_memory_file_artifacts_kind
+ON memory_file_artifacts(artifact_kind);
+
+CREATE INDEX IF NOT EXISTS idx_memory_file_artifacts_uri
+ON memory_file_artifacts(uri);
+
 CREATE TABLE IF NOT EXISTS memory_entities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     entity_id TEXT UNIQUE NOT NULL,

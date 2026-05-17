@@ -173,6 +173,71 @@ def _sync_memory_source_refs(
         )
 
 
+def _artifact_refs_from_frontmatter(fm: Mapping[str, object]) -> list[dict[str, object]]:
+    payload = fm.get("memory_payload")
+    raw_value = payload.get("artifacts") if isinstance(payload, Mapping) else fm.get("artifacts")
+    raw_refs = raw_value if isinstance(raw_value, list) else [raw_value] if isinstance(raw_value, Mapping) else []
+    artifacts: list[dict[str, object]] = []
+    for raw in raw_refs:
+        if not isinstance(raw, Mapping):
+            continue
+        kind = str(raw.get("kind") or raw.get("artifact_kind") or "").strip().lower()
+        uri = str(raw.get("uri") or "").strip()
+        if not kind or not uri:
+            continue
+        artifacts.append(
+            {
+                "kind": kind,
+                "uri": uri,
+                "description": str(raw.get("description") or "").strip() or None,
+                "metadata": {
+                    key: value
+                    for key, value in raw.items()
+                    if key not in {"kind", "artifact_kind", "uri", "description"}
+                },
+            }
+        )
+    return artifacts
+
+
+def _sync_memory_artifacts(
+    conn: sqlite3.Connection,
+    *,
+    file_id: int,
+    persona: str,
+    frontmatter: Mapping[str, object],
+) -> None:
+    artifacts = _artifact_refs_from_frontmatter(frontmatter)
+    conn.execute("DELETE FROM memory_file_artifacts WHERE file_id = ?", (file_id,))
+    for artifact in artifacts:
+        conn.execute(
+            """
+            INSERT INTO memory_file_artifacts (
+                file_id, persona, artifact_kind, uri, description, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                file_id,
+                persona,
+                artifact["kind"],
+                artifact["uri"],
+                artifact["description"],
+                json.dumps(artifact["metadata"], sort_keys=True),
+            ),
+        )
+
+
+def _sync_memory_provenance_indexes(
+    conn: sqlite3.Connection,
+    *,
+    file_id: int,
+    persona: str,
+    frontmatter: Mapping[str, object],
+) -> None:
+    _sync_memory_source_refs(conn, file_id=file_id, persona=persona, source_refs=frontmatter.get("source_refs"))
+    _sync_memory_artifacts(conn, file_id=file_id, persona=persona, frontmatter=frontmatter)
+
+
 def normalize_for_fts(text: str) -> str:
     """Expand text for better FTS5 matching.
 
@@ -318,11 +383,11 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
     ).fetchone()
 
     if row and row[1] == content_hash and row[2] == idempotency_key:
-        _sync_memory_source_refs(
+        _sync_memory_provenance_indexes(
             conn,
             file_id=int(row[0]),
             persona=persona,
-            source_refs=fm.get("source_refs"),
+            frontmatter=fm,
         )
         return False
 
@@ -395,7 +460,7 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
         INSERT INTO memory_fts (rowid, path, persona, relative_path, content, fm_type, fm_tags, fm_about)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (file_id, path_str, persona, relative_path, fts_body, fm.get("type", ""), tags_json, fm.get("about", "")))
-    _sync_memory_source_refs(conn, file_id=int(file_id), persona=persona, source_refs=fm.get("source_refs"))
+    _sync_memory_provenance_indexes(conn, file_id=int(file_id), persona=persona, frontmatter=fm)
 
     return True
 
@@ -699,6 +764,52 @@ def memory_source_ref_query(
             "title": r[6],
             "timestamp": r[7],
             "metadata": json.loads(r[8]) if r[8] else {},
+        }
+        for r in rows
+    ]
+
+
+def memory_artifact_query(
+    conn: sqlite3.Connection,
+    persona: Optional[str] = None,
+    artifact_kind: Optional[str] = None,
+    uri: Optional[str] = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Query indexed artifact references without reading memory bodies."""
+    conditions, params = [], []
+    if persona:
+        conditions.append("a.persona = ?")
+        params.append(persona)
+    if artifact_kind:
+        conditions.append("a.artifact_kind = ?")
+        params.append(artifact_kind.strip().lower())
+    if uri:
+        conditions.append("a.uri = ?")
+        params.append(uri)
+    where = " AND ".join(conditions) if conditions else "1=1"
+    rows = conn.execute(
+        f"""
+        SELECT a.persona, f.relative_path, f.fm_type, f.fm_importance,
+               a.artifact_kind, a.uri, a.description, a.metadata
+        FROM memory_file_artifacts a
+        JOIN memory_files f ON f.id = a.file_id
+        WHERE {where}
+        ORDER BY f.fm_importance DESC NULLS LAST, f.relative_path ASC
+        LIMIT ?
+        """,
+        params + [limit],
+    ).fetchall()
+    return [
+        {
+            "persona": r[0],
+            "relative_path": r[1],
+            "type": r[2],
+            "importance": r[3],
+            "artifact_kind": r[4],
+            "uri": r[5],
+            "description": r[6],
+            "metadata": json.loads(r[7]) if r[7] else {},
         }
         for r in rows
     ]

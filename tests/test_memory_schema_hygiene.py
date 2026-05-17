@@ -5,6 +5,7 @@ from pathlib import Path
 from chimera_memory.memory import (
     index_file,
     init_memory_tables,
+    memory_artifact_query,
     memory_content_duplicate_groups,
     memory_query,
     memory_search,
@@ -101,6 +102,7 @@ def test_init_memory_tables_migrates_legacy_memory_files_schema() -> None:
     assert "idx_mf_default_search" in indexes
     assert "memory_file_edges" in _table_names(conn)
     assert "memory_file_source_refs" in _table_names(conn)
+    assert "memory_file_artifacts" in _table_names(conn)
 
 
 def test_index_file_writes_content_fingerprint_and_updates_timestamp(tmp_path: Path) -> None:
@@ -174,6 +176,46 @@ def test_index_file_syncs_source_refs_and_query_filters(tmp_path: Path) -> None:
     )
     assert index_file(conn, "asa", "memory.md", memory_file)
     assert memory_source_ref_query(conn, persona="asa") == []
+
+
+def test_index_file_syncs_memory_payload_artifacts(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+
+    memory_file = tmp_path / "memory.md"
+    memory_file.write_text(
+        "---\n"
+        "type: procedural\n"
+        "importance: 8\n"
+        "memory_payload:\n"
+        "  artifacts:\n"
+        "    - kind: commit\n"
+        "      uri: dc13019\n"
+        "      description: source ref indexing\n"
+        "      repo: ChimeraMemory\n"
+        "---\n"
+        "Artifact indexed body.\n",
+        encoding="utf-8",
+    )
+
+    assert index_file(conn, "asa", "memory.md", memory_file)
+    artifacts = memory_artifact_query(conn, persona="asa", artifact_kind="commit")
+
+    assert len(artifacts) == 1
+    assert artifacts[0]["relative_path"] == "memory.md"
+    assert artifacts[0]["uri"] == "dc13019"
+    assert artifacts[0]["description"] == "source ref indexing"
+    assert artifacts[0]["metadata"] == {"repo": "ChimeraMemory"}
+
+    assert not index_file(conn, "asa", "memory.md", memory_file)
+    assert len(memory_artifact_query(conn, persona="asa")) == 1
+
+    memory_file.write_text(
+        "---\ntype: procedural\nimportance: 8\n---\nArtifact indexed body.\n",
+        encoding="utf-8",
+    )
+    assert index_file(conn, "asa", "memory.md", memory_file)
+    assert memory_artifact_query(conn, persona="asa") == []
 
 
 def test_idempotency_key_is_partial_unique_and_content_fingerprint_accepts_duplicates() -> None:
