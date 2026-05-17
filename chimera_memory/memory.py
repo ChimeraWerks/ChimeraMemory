@@ -12,6 +12,7 @@ import os
 import re
 import sqlite3
 import time
+import uuid
 from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
@@ -84,7 +85,7 @@ from .memory_authored_writeback import (
     build_authored_memory_write_plan,
     write_authored_memory_file,
 )
-from .memory_review import REVIEW_ACTIONS, memory_review_action, memory_review_pending
+from .memory_review import REVIEW_ACTIONS, memory_review_action as _db_memory_review_action, memory_review_pending
 from .memory_schema import init_memory_tables
 
 log = logging.getLogger(__name__)
@@ -967,6 +968,134 @@ def memory_content_duplicate_groups(
             }
         )
     return groups
+
+
+def _find_memory_file_for_review_route(conn: sqlite3.Connection, file_path: str):
+    path = file_path.replace("\\", "/").strip()
+    return conn.execute(
+        """
+        SELECT id, path, persona, relative_path
+        FROM memory_files
+        WHERE path = ? OR relative_path = ? OR path LIKE ?
+        ORDER BY CASE
+            WHEN path = ? THEN 0
+            WHEN relative_path = ? THEN 1
+            ELSE 2
+        END
+        LIMIT 1
+        """,
+        (path, path, f"%{path}%", path, path),
+    ).fetchone()
+
+
+def _persona_dir_from_indexed_file(full_path: Path, relative_path: str) -> Path | None:
+    try:
+        relative_parts = Path(relative_path).parts
+    except (TypeError, ValueError):
+        return None
+    persona_root = full_path
+    for _part in relative_parts:
+        persona_root = persona_root.parent
+    return persona_root.parent
+
+
+def _is_frontmatter_migrated_memory(full_path: Path) -> bool:
+    try:
+        content = full_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    frontmatter, _body = parse_frontmatter(content)
+    return isinstance(frontmatter.get("memory_payload"), Mapping) and isinstance(
+        frontmatter.get("legacy_migration"), Mapping
+    )
+
+
+def memory_review_action(
+    conn: sqlite3.Connection,
+    *,
+    file_path: str,
+    action: str,
+    reviewer: str = "user",
+    notes: str = "",
+) -> dict:
+    """Apply a review action, routing migrated memories through durable frontmatter."""
+    row = _find_memory_file_for_review_route(conn, file_path)
+    if row is not None:
+        full_path = Path(row[1])
+        if full_path.exists() and _is_frontmatter_migrated_memory(full_path):
+            personas_dir = _persona_dir_from_indexed_file(full_path, str(row[3]))
+            if personas_dir is not None:
+                result = memory_legacy_frontmatter_review_action(
+                    conn,
+                    personas_dir,
+                    persona=str(row[2]),
+                    relative_path=str(row[3]),
+                    action=action,
+                    reviewer=reviewer,
+                    notes=notes,
+                    write=True,
+                )
+                if result.get("ok"):
+                    action_id = str(uuid.uuid4())
+                    conn.execute(
+                        """
+                        INSERT INTO memory_review_actions (
+                            action_id, action, reviewer, persona, file_id, path,
+                            before_metadata, after_metadata, notes
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            action_id,
+                            action,
+                            reviewer or "user",
+                            row[2],
+                            result.get("file_id") or row[0],
+                            str(full_path).replace("\\", "/"),
+                            _json_text(result.get("before", {})),
+                            _json_text(result.get("after", {})),
+                            notes or "",
+                        ),
+                    )
+                    record_memory_audit_event(
+                        conn,
+                        {
+                            "confirm": "memory_confirmed",
+                            "edit": "memory_review_edit_requested",
+                            "evidence_only": "memory_evidence_only",
+                            "restrict_scope": "memory_restricted",
+                            "mark_stale": "memory_marked_stale",
+                            "merge": "memory_merged",
+                            "reject": "memory_rejected",
+                            "dispute": "memory_disputed",
+                            "supersede": "memory_superseded",
+                        }.get(action, "memory_review_action"),
+                        persona=str(row[2]),
+                        target_kind="memory_file",
+                        target_id=str(result.get("file_id") or row[0]),
+                        payload={
+                            "action_id": action_id,
+                            "path": str(full_path).replace("\\", "/"),
+                            "notes": notes or "",
+                            "durable_frontmatter": True,
+                        },
+                        actor=reviewer or "user",
+                        commit=False,
+                    )
+                    conn.commit()
+                    result["action_id"] = action_id
+                    result["durable_frontmatter"] = True
+                    return result
+                if result.get("error") == "unsupported review action":
+                    raise ValueError(f"unsupported review action: {action}")
+                return result
+
+    return _db_memory_review_action(
+        conn,
+        file_path=file_path,
+        action=action,
+        reviewer=reviewer,
+        notes=notes,
+    )
 
 
 def memory_gaps(conn: sqlite3.Connection, persona: Optional[str] = None) -> dict:

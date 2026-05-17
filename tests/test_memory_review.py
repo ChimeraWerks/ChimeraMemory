@@ -8,6 +8,7 @@ from chimera_memory.memory import (
     memory_review_action,
     memory_review_pending,
 )
+from chimera_memory.memory_legacy_migration import memory_legacy_frontmatter_retrofit
 
 
 def _index_generated_memory(conn: sqlite3.Connection, tmp_path: Path, name: str = "generated.md") -> None:
@@ -157,3 +158,60 @@ def test_review_action_reports_missing_file(tmp_path: Path) -> None:
         "error": "memory file not found",
         "file_path": "missing.md",
     }
+
+
+def test_review_action_routes_migrated_memory_through_frontmatter(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+    personas_dir = tmp_path / "personas"
+    persona_root = personas_dir / "researcher" / "sarah"
+    memory_file = persona_root / "memory" / "procedural" / "migrated.md"
+    body = "Durable migrated body.\n"
+    memory_file.parent.mkdir(parents=True, exist_ok=True)
+    memory_file.write_text("---\ntype: procedural\nimportance: 9\n---" + body, encoding="utf-8")
+    migrated = memory_legacy_frontmatter_retrofit(
+        personas_dir,
+        persona="sarah",
+        relative_path="memory/procedural/migrated.md",
+        memory_payload={"lessons": ["frontmatter review must be durable"]},
+        write=True,
+        migrated_at="2026-05-17T00:00:00Z",
+    )
+    assert migrated["ok"] is True
+    assert index_file(conn, "sarah", "memory/procedural/migrated.md", memory_file)
+
+    result = memory_review_action(
+        conn,
+        file_path="memory/procedural/migrated.md",
+        action="confirm",
+        reviewer="sarah",
+    )
+
+    assert result["ok"] is True
+    assert result["durable_frontmatter"] is True
+    assert result["after"]["review_status"] == "confirmed"
+    assert result["after"]["can_use_as_instruction"] is True
+    updated = memory_file.read_text(encoding="utf-8")
+    assert updated.endswith(body)
+    assert "review_status: confirmed" in updated
+    assert "provenance_status: user_confirmed" in updated
+    assert "can_use_as_instruction: true" in updated
+    assert "payload_review_status: confirmed" in updated
+
+    row = conn.execute(
+        """
+        SELECT fm_provenance_status, fm_review_status, fm_can_use_as_instruction,
+               fm_requires_user_confirmation
+        FROM memory_files
+        WHERE relative_path = ?
+        """,
+        ("memory/procedural/migrated.md",),
+    ).fetchone()
+    assert row == ("user_confirmed", "confirmed", 1, 0)
+    assert memory_review_pending(conn, persona="sarah") == []
+
+    review_row = conn.execute(
+        "SELECT action, reviewer FROM memory_review_actions WHERE action_id = ?",
+        (result["action_id"],),
+    ).fetchone()
+    assert review_row == ("confirm", "sarah")
