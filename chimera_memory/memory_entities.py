@@ -9,6 +9,7 @@ import uuid
 from itertools import combinations
 from pathlib import Path
 
+from .memory_frontmatter import parse_frontmatter
 from .memory_observability import record_memory_audit_event
 
 ENTITY_TYPES = {
@@ -373,6 +374,49 @@ def _path_entity_name(relative_path: str) -> str:
     return _WHITESPACE_RE.sub(" ", stem)
 
 
+def _payload_entity_type(raw_key: object) -> str:
+    key = normalize_entity_name(str(raw_key or ""))
+    if key.endswith("s"):
+        key = key[:-1]
+    return _PREFIX_TO_TYPE.get(key, key if key in ENTITY_TYPES else "topic")
+
+
+def _payload_entity_values(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    if isinstance(value, dict):
+        name = value.get("name") or value.get("canonical_name") or value.get("value")
+        return [str(name).strip()] if str(name or "").strip() else []
+    if isinstance(value, (list, tuple)):
+        values: list[str] = []
+        for item in value:
+            values.extend(_payload_entity_values(item))
+        return values
+    return []
+
+
+def _memory_payload_entities_for_file(path: str, relative_path: str) -> list[tuple[str, str, str, str]]:
+    try:
+        content = Path(path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    frontmatter, _body = parse_frontmatter(content)
+    payload = frontmatter.get("memory_payload")
+    if not isinstance(payload, dict):
+        return []
+    entities = payload.get("entities")
+    if not isinstance(entities, dict):
+        return []
+
+    derived: list[tuple[str, str, str, str]] = []
+    for raw_key, raw_values in entities.items():
+        entity_type = _payload_entity_type(raw_key)
+        evidence = f"memory_payload.entities.{raw_key}"
+        for name in _payload_entity_values(raw_values):
+            derived.append((entity_type, name, "mentioned", evidence))
+    return derived
+
+
 def index_entities_for_memory_file(conn: sqlite3.Connection, file_id: int) -> list[dict]:
     """Derive entity links for one indexed memory file from local metadata."""
     row = conn.execute(
@@ -402,6 +446,8 @@ def index_entities_for_memory_file(conn: sqlite3.Connection, file_id: int) -> li
         if name:
             derived.append((entity_type, name, "tag", f"tag:{tag}"))
 
+    derived.extend(_memory_payload_entities_for_file(str(row[1] or ""), relative_path))
+
     links = []
     seen_keys = set()
     for entity_type, name, role, evidence in derived:
@@ -409,11 +455,12 @@ def index_entities_for_memory_file(conn: sqlite3.Connection, file_id: int) -> li
         if key in seen_keys:
             continue
         seen_keys.add(key)
+        source = "memory_payload" if str(evidence).startswith("memory_payload.") else "frontmatter"
         entity = upsert_memory_entity(
             conn,
             entity_type=entity_type,
             canonical_name=name,
-            source="frontmatter",
+            source=source,
             metadata={"persona": row[2]},
             commit=False,
         )
@@ -423,7 +470,7 @@ def index_entities_for_memory_file(conn: sqlite3.Connection, file_id: int) -> li
             entity_row_id=entity["id"],
             mention_role=role,
             confidence=1.0,
-            source="frontmatter",
+            source=source,
             evidence=evidence,
             metadata={"relative_path": relative_path},
             commit=False,

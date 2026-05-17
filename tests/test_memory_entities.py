@@ -106,6 +106,51 @@ def test_entity_connections_use_shared_file_evidence(tmp_path: Path) -> None:
         assert row["evidence_paths"] == ["pa.md"]
 
 
+def test_entity_index_links_authored_memory_payload_entities(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+
+    memory_file = tmp_path / "writer-is-persona.md"
+    _write_memory(
+        memory_file,
+        [
+            "type: procedural",
+            "importance: 9",
+            "tags:",
+            "  - memory-architecture",
+            "memory_payload:",
+            "  entities:",
+            "    people:",
+            "      - Charles",
+            "      - Sarah",
+            "    projects:",
+            "      - ChimeraMemory",
+            "    topics:",
+            "      - structured-writeback",
+            "    tools:",
+            "      - Codex",
+        ],
+        "Writer means persona-authored payload, not model output.",
+    )
+    assert index_file(conn, "sarah", "procedural/writer-is-persona.md", memory_file)
+
+    result = memory_entity_index(conn, persona="sarah")
+
+    assert result["file_count"] == 1
+    assert result["link_count"] == 6
+    links = memory_file_entity_links(conn, file_path="writer-is-persona.md")
+    by_name = {link["canonical_name"]: link for link in links}
+
+    assert by_name["Charles"]["entity_type"] == "person"
+    assert by_name["Sarah"]["entity_type"] == "person"
+    assert by_name["ChimeraMemory"]["entity_type"] == "project"
+    assert by_name["structured-writeback"]["entity_type"] == "topic"
+    assert by_name["Codex"]["entity_type"] == "tool"
+    assert by_name["Charles"]["source"] == "memory_payload"
+    assert by_name["ChimeraMemory"]["mention_role"] == "mentioned"
+    assert by_name["ChimeraMemory"]["evidence"] == "memory_payload.entities.projects"
+
+
 def test_typed_entity_edge_upsert_accumulates_support() -> None:
     conn = sqlite3.connect(":memory:")
     init_memory_tables(conn)
