@@ -6,6 +6,7 @@ import urllib.request
 from pathlib import Path
 
 from chimera_memory.memory_enhancement_oauth import MemoryEnhancementOAuthStore
+from chimera_memory.memory_enhancement_hermes_oauth import run_hermes_memory_enhancement_oauth_login
 from chimera_memory.memory_enhancement_oauth_flow import (
     poll_memory_enhancement_oauth_flow,
     start_memory_enhancement_oauth_flow,
@@ -171,6 +172,56 @@ def test_openai_device_oauth_flow_polls_and_persists_codex_credential(tmp_path: 
     assert credential.refresh_token == "TEST_ONLY_OPENAI_REFRESH"
     assert credential.transport == "openai_codex"
     assert len(calls) == 3
+
+
+def test_hermes_anthropic_login_persists_to_memory_pool(monkeypatch, tmp_path: Path):
+    store = MemoryEnhancementOAuthStore(tmp_path / "auth.json")
+
+    monkeypatch.setattr(
+        "chimera_memory.memory_enhancement_hermes_oauth._run_hermes_anthropic_oauth_login_pure",
+        lambda: {
+            "access_token": "TEST_ONLY_ANTHROPIC_ACCESS",
+            "refresh_token": "TEST_ONLY_ANTHROPIC_REFRESH",
+            "expires_at_ms": 1_800_000_000_000,
+        },
+    )
+
+    result = run_hermes_memory_enhancement_oauth_login("anthropic", store=store)
+    credential = store.get("anthropic-memory", provider_id="anthropic")
+
+    assert result["status"] == "approved"
+    assert credential.access_token == "TEST_ONLY_ANTHROPIC_ACCESS"
+    assert credential.refresh_token == "TEST_ONLY_ANTHROPIC_REFRESH"
+    assert credential.source == "manual:hermes_pkce"
+    assert credential.transport == "anthropic_oauth"
+
+
+def test_hermes_openai_login_persists_to_memory_pool(monkeypatch, tmp_path: Path):
+    store = MemoryEnhancementOAuthStore(tmp_path / "auth.json")
+
+    monkeypatch.setattr(
+        "chimera_memory.memory_enhancement_hermes_oauth._run_hermes_openai_codex_device_code_login",
+        lambda: {
+            "tokens": {
+                "access_token": "TEST_ONLY_OPENAI_ACCESS",
+                "refresh_token": "TEST_ONLY_OPENAI_REFRESH",
+            },
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "last_refresh": "2026-05-17T00:00:00Z",
+            "auth_mode": "chatgpt",
+        },
+    )
+
+    result = run_hermes_memory_enhancement_oauth_login("openai", store=store)
+    credential = store.get("openai-memory", provider_id="openai")
+
+    assert result["status"] == "approved"
+    assert credential.access_token == "TEST_ONLY_OPENAI_ACCESS"
+    assert credential.refresh_token == "TEST_ONLY_OPENAI_REFRESH"
+    assert credential.source == "device_code"
+    assert credential.transport == "openai_codex"
+    assert credential.base_url == "https://chatgpt.com/backend-api/codex"
+    assert credential.extra["auth_mode"] == "chatgpt"
 
 
 def _flow_state(tmp_path: Path, flow_id: str):
