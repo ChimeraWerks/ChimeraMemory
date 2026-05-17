@@ -643,6 +643,8 @@ def create_server():
         persona: str | None = None,
         limit: int = 20,
         include_synthesis: bool = False,
+        source_kind: str = "",
+        source_uri: str = "",
     ) -> str:
         """Full-text search across all persona memory files. Returns paths, snippets, and metadata."""
         _ensure_memory_indexed()
@@ -653,6 +655,8 @@ def create_server():
             persona,
             limit,
             include_synthesis=include_synthesis,
+            source_kind=source_kind or None,
+            source_uri=source_uri or None,
         )
         if not results:
             return "No memories found matching your query."
@@ -672,6 +676,8 @@ def create_server():
         about: str | None = None, sort_by: str = "importance",
         sort_order: str = "DESC", limit: int = 50,
         include_synthesis: bool = False,
+        source_kind: str = "",
+        source_uri: str = "",
     ) -> str:
         """Query memories by frontmatter fields (type, importance, status, tags, etc)."""
         _ensure_memory_indexed()
@@ -680,7 +686,9 @@ def create_server():
                          min_importance=min_importance, max_importance=max_importance,
                          status=status, tag=tag, about=about, sort_by=sort_by,
                          sort_order=sort_order, limit=limit,
-                         include_synthesis=include_synthesis)
+                         include_synthesis=include_synthesis,
+                         source_kind=source_kind or None,
+                         source_uri=source_uri or None)
         if not results:
             return "No memories match your criteria."
         lines = []
@@ -1725,6 +1733,34 @@ def create_server():
             )
         if result.get("truncated"):
             lines.append("Result truncated. Increase limit for more rows.")
+        return "\n".join(lines)
+
+    @server.tool()
+    def memory_source_refs(
+        persona: str = "",
+        source_kind: str = "",
+        uri: str = "",
+        limit: int = 50,
+    ) -> str:
+        """List indexed source references attached to memory files."""
+        _ensure_memory_indexed()
+        from .memory import memory_source_ref_query
+
+        refs = memory_source_ref_query(
+            _get_memory_conn(),
+            persona=persona or None,
+            source_kind=source_kind or None,
+            uri=uri or None,
+            limit=limit,
+        )
+        if not refs:
+            return "No memory source references found."
+        lines = ["Memory source references:"]
+        for ref in refs:
+            lines.append(
+                f"- {ref['persona']}:{ref['relative_path']} "
+                f"{ref['source_kind']} {ref.get('uri') or ''}".rstrip()
+            )
         return "\n".join(lines)
 
     @server.tool()

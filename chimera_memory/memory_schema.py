@@ -220,6 +220,26 @@ ON memory_review_actions(action);
 CREATE INDEX IF NOT EXISTS idx_memory_review_actions_created_at
 ON memory_review_actions(created_at);
 
+CREATE TABLE IF NOT EXISTS memory_file_source_refs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_id INTEGER NOT NULL REFERENCES memory_files(id) ON DELETE CASCADE,
+    persona TEXT NOT NULL,
+    source_kind TEXT NOT NULL,
+    uri TEXT,
+    title TEXT,
+    source_timestamp TEXT,
+    metadata TEXT DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_memory_file_source_refs_file
+ON memory_file_source_refs(file_id);
+
+CREATE INDEX IF NOT EXISTS idx_memory_file_source_refs_kind
+ON memory_file_source_refs(source_kind);
+
+CREATE INDEX IF NOT EXISTS idx_memory_file_source_refs_uri
+ON memory_file_source_refs(uri);
+
 CREATE TABLE IF NOT EXISTS memory_entities (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     entity_id TEXT UNIQUE NOT NULL,

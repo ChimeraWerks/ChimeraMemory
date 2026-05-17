@@ -6,6 +6,9 @@ from chimera_memory.memory import (
     index_file,
     init_memory_tables,
     memory_content_duplicate_groups,
+    memory_query,
+    memory_search,
+    memory_source_ref_query,
     normalized_content_fingerprint,
 )
 
@@ -97,6 +100,7 @@ def test_init_memory_tables_migrates_legacy_memory_files_schema() -> None:
     assert "idx_mf_instruction_use" in indexes
     assert "idx_mf_default_search" in indexes
     assert "memory_file_edges" in _table_names(conn)
+    assert "memory_file_source_refs" in _table_names(conn)
 
 
 def test_index_file_writes_content_fingerprint_and_updates_timestamp(tmp_path: Path) -> None:
@@ -127,6 +131,49 @@ def test_index_file_writes_content_fingerprint_and_updates_timestamp(tmp_path: P
     assert row[0] == normalized_content_fingerprint(memory_file.read_text(encoding="utf-8"))
     assert row[1] > first_updated_at
     assert row[2] == 6
+
+
+def test_index_file_syncs_source_refs_and_query_filters(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+
+    memory_file = tmp_path / "memory.md"
+    memory_file.write_text(
+        "---\n"
+        "type: procedural\n"
+        "importance: 7\n"
+        "source_refs:\n"
+        "  - kind: discord-msg\n"
+        "    uri: '150'\n"
+        "    title: source message\n"
+        "    timestamp: '2026-05-17T00:00:00Z'\n"
+        "    channel: active-development\n"
+        "---\n"
+        "Source indexed body.\n",
+        encoding="utf-8",
+    )
+
+    assert index_file(conn, "asa", "memory.md", memory_file)
+    refs = memory_source_ref_query(conn, persona="asa", source_kind="discord-msg")
+
+    assert len(refs) == 1
+    assert refs[0]["relative_path"] == "memory.md"
+    assert refs[0]["uri"] == "150"
+    assert refs[0]["metadata"] == {"channel": "active-development"}
+    assert memory_query(conn, persona="asa", source_kind="discord-msg")[0]["relative_path"] == "memory.md"
+    assert memory_query(conn, persona="asa", source_uri="150")[0]["relative_path"] == "memory.md"
+    assert memory_search(conn, "Source", persona="asa", source_kind="discord-msg")[0]["relative_path"] == "memory.md"
+    assert memory_search(conn, "Source", persona="asa", source_kind="gmail") == []
+
+    assert not index_file(conn, "asa", "memory.md", memory_file)
+    assert len(memory_source_ref_query(conn, persona="asa")) == 1
+
+    memory_file.write_text(
+        "---\ntype: procedural\nimportance: 7\n---\nSource indexed body.\n",
+        encoding="utf-8",
+    )
+    assert index_file(conn, "asa", "memory.md", memory_file)
+    assert memory_source_ref_query(conn, persona="asa") == []
 
 
 def test_idempotency_key_is_partial_unique_and_content_fingerprint_accepts_duplicates() -> None:

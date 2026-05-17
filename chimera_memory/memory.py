@@ -12,6 +12,7 @@ import os
 import re
 import sqlite3
 import time
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -118,6 +119,58 @@ def _frontmatter_bool(value: object, default: bool = False) -> int:
     if text in {"0", "false", "no", "off"}:
         return 0
     return 1 if default else 0
+
+
+def _source_refs_from_frontmatter(value: object) -> list[dict[str, object]]:
+    raw_refs = value if isinstance(value, list) else [value] if isinstance(value, Mapping) else []
+    refs: list[dict[str, object]] = []
+    for raw in raw_refs:
+        if not isinstance(raw, Mapping):
+            continue
+        kind = str(raw.get("kind") or raw.get("source_kind") or "").strip().lower()
+        if not kind:
+            continue
+        ref = {
+            "kind": kind,
+            "uri": str(raw.get("uri") or "").strip() or None,
+            "title": str(raw.get("title") or "").strip() or None,
+            "timestamp": str(raw.get("timestamp") or raw.get("source_timestamp") or "").strip() or None,
+            "metadata": {
+                key: value
+                for key, value in raw.items()
+                if key not in {"kind", "source_kind", "uri", "title", "timestamp", "source_timestamp"}
+            },
+        }
+        refs.append(ref)
+    return refs
+
+
+def _sync_memory_source_refs(
+    conn: sqlite3.Connection,
+    *,
+    file_id: int,
+    persona: str,
+    source_refs: object,
+) -> None:
+    refs = _source_refs_from_frontmatter(source_refs)
+    conn.execute("DELETE FROM memory_file_source_refs WHERE file_id = ?", (file_id,))
+    for ref in refs:
+        conn.execute(
+            """
+            INSERT INTO memory_file_source_refs (
+                file_id, persona, source_kind, uri, title, source_timestamp, metadata
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                file_id,
+                persona,
+                ref["kind"],
+                ref["uri"],
+                ref["title"],
+                ref["timestamp"],
+                json.dumps(ref["metadata"], sort_keys=True),
+            ),
+        )
 
 
 def normalize_for_fts(text: str) -> str:
@@ -265,6 +318,12 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
     ).fetchone()
 
     if row and row[1] == content_hash and row[2] == idempotency_key:
+        _sync_memory_source_refs(
+            conn,
+            file_id=int(row[0]),
+            persona=persona,
+            source_refs=fm.get("source_refs"),
+        )
         return False
 
     tags_json = json.dumps(fm.get("tags", []))
@@ -336,6 +395,7 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
         INSERT INTO memory_fts (rowid, path, persona, relative_path, content, fm_type, fm_tags, fm_about)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (file_id, path_str, persona, relative_path, fts_body, fm.get("type", ""), tags_json, fm.get("about", "")))
+    _sync_memory_source_refs(conn, file_id=int(file_id), persona=persona, source_refs=fm.get("source_refs"))
 
     return True
 
@@ -448,30 +508,30 @@ def memory_search(
     persona: Optional[str] = None,
     limit: int = 20,
     include_synthesis: bool = False,
+    source_kind: Optional[str] = None,
+    source_uri: Optional[str] = None,
 ) -> list[dict]:
     """Full-text search across memory files."""
     from .cognitive import reinforce_on_access
 
+    conditions = [
+        "memory_fts MATCH ?",
+        "(? OR COALESCE(f.fm_exclude_from_default_search, 0) = 0)",
+    ]
+    params: list[object] = [query, int(bool(include_synthesis))]
     if persona:
-        rows = conn.execute("""
-            SELECT f.id, f.path, f.persona, f.relative_path, f.fm_type, f.fm_importance,
-                   f.fm_status, snippet(memory_fts, 3, '>>>', '<<<', '...', 40) as snippet
-            FROM memory_fts
-            JOIN memory_files f ON f.id = memory_fts.rowid
-            WHERE memory_fts MATCH ? AND f.persona = ?
-              AND (? OR COALESCE(f.fm_exclude_from_default_search, 0) = 0)
-            ORDER BY rank LIMIT ?
-        """, (query, persona, int(bool(include_synthesis)), limit)).fetchall()
-    else:
-        rows = conn.execute("""
-            SELECT f.id, f.path, f.persona, f.relative_path, f.fm_type, f.fm_importance,
-                   f.fm_status, snippet(memory_fts, 3, '>>>', '<<<', '...', 40) as snippet
-            FROM memory_fts
-            JOIN memory_files f ON f.id = memory_fts.rowid
-            WHERE memory_fts MATCH ?
-              AND (? OR COALESCE(f.fm_exclude_from_default_search, 0) = 0)
-            ORDER BY rank LIMIT ?
-        """, (query, int(bool(include_synthesis)), limit)).fetchall()
+        conditions.append("f.persona = ?")
+        params.append(persona)
+    _add_source_ref_conditions(conditions, params, source_kind=source_kind, source_uri=source_uri)
+    where = " AND ".join(conditions)
+    rows = conn.execute(f"""
+        SELECT f.id, f.path, f.persona, f.relative_path, f.fm_type, f.fm_importance,
+               f.fm_status, snippet(memory_fts, 3, '>>>', '<<<', '...', 40) as snippet
+        FROM memory_fts
+        JOIN memory_files f ON f.id = memory_fts.rowid
+        WHERE {where}
+        ORDER BY rank LIMIT ?
+    """, params + [limit]).fetchall()
 
     for r in rows:
         reinforce_on_access(conn, r[0])
@@ -488,7 +548,13 @@ def memory_search(
         persona=persona,
         requested_limit=limit,
         results=results,
-        request_payload={"query": query, "persona": persona, "limit": limit},
+        request_payload={
+            "query": query,
+            "persona": persona,
+            "limit": limit,
+            "source_kind": source_kind,
+            "source_uri": source_uri,
+        },
         response_policy={
             "ranking": "fts5_rank",
             "returned": "all_results",
@@ -505,6 +571,8 @@ def memory_query(
     tag: Optional[str] = None, about: Optional[str] = None,
     sort_by: str = "importance", sort_order: str = "DESC", limit: int = 50,
     include_synthesis: bool = False,
+    source_kind: Optional[str] = None,
+    source_uri: Optional[str] = None,
 ) -> list[dict]:
     """Structured query against frontmatter fields."""
     conditions, params = [], []
@@ -525,6 +593,7 @@ def memory_query(
         conditions.append("fm_about LIKE ?"); params.append(f"%{about}%")
     if not include_synthesis:
         conditions.append("COALESCE(fm_exclude_from_default_search, 0) = 0")
+    _add_source_ref_conditions(conditions, params, source_kind=source_kind, source_uri=source_uri)
 
     where = " AND ".join(conditions) if conditions else "1=1"
     valid_sorts = {
@@ -544,7 +613,7 @@ def memory_query(
                fm_review_status, fm_sensitivity_tier,
                fm_can_use_as_instruction, fm_can_use_as_evidence,
                fm_requires_user_confirmation, fm_exclude_from_default_search
-        FROM memory_files WHERE {where}
+        FROM memory_files f WHERE {where}
         ORDER BY {sort_col} {order} NULLS LAST LIMIT ?
     """, params + [limit]).fetchall()
 
@@ -561,6 +630,76 @@ def memory_query(
          "can_use_as_evidence": bool(r[22]),
          "requires_user_confirmation": bool(r[23]),
          "exclude_from_default_search": bool(r[24])}
+        for r in rows
+    ]
+
+
+def _add_source_ref_conditions(
+    conditions: list[str],
+    params: list[object],
+    *,
+    source_kind: Optional[str],
+    source_uri: Optional[str],
+) -> None:
+    if not source_kind and not source_uri:
+        return
+    sub_conditions = ["sr.file_id = f.id"]
+    if source_kind:
+        sub_conditions.append("sr.source_kind = ?")
+        params.append(source_kind.strip().lower())
+    if source_uri:
+        sub_conditions.append("sr.uri = ?")
+        params.append(source_uri)
+    conditions.append(
+        "EXISTS (SELECT 1 FROM memory_file_source_refs sr WHERE "
+        + " AND ".join(sub_conditions)
+        + ")"
+    )
+
+
+def memory_source_ref_query(
+    conn: sqlite3.Connection,
+    persona: Optional[str] = None,
+    source_kind: Optional[str] = None,
+    uri: Optional[str] = None,
+    limit: int = 50,
+) -> list[dict]:
+    """Query indexed memory source references without reading memory bodies."""
+    conditions, params = [], []
+    if persona:
+        conditions.append("r.persona = ?")
+        params.append(persona)
+    if source_kind:
+        conditions.append("r.source_kind = ?")
+        params.append(source_kind.strip().lower())
+    if uri:
+        conditions.append("r.uri = ?")
+        params.append(uri)
+    where = " AND ".join(conditions) if conditions else "1=1"
+    rows = conn.execute(
+        f"""
+        SELECT r.persona, f.relative_path, f.fm_type, f.fm_importance,
+               r.source_kind, r.uri, r.title, r.source_timestamp, r.metadata
+        FROM memory_file_source_refs r
+        JOIN memory_files f ON f.id = r.file_id
+        WHERE {where}
+        ORDER BY f.fm_importance DESC NULLS LAST, f.relative_path ASC
+        LIMIT ?
+        """,
+        params + [limit],
+    ).fetchall()
+    return [
+        {
+            "persona": r[0],
+            "relative_path": r[1],
+            "type": r[2],
+            "importance": r[3],
+            "source_kind": r[4],
+            "uri": r[5],
+            "title": r[6],
+            "timestamp": r[7],
+            "metadata": json.loads(r[8]) if r[8] else {},
+        }
         for r in rows
     ]
 
