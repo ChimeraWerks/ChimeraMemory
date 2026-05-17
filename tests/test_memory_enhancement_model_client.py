@@ -6,7 +6,10 @@ from collections.abc import Mapping
 
 import pytest
 
-from chimera_memory.memory_enhancement import build_memory_enhancement_request
+from chimera_memory.memory_enhancement import (
+    build_authored_memory_enrichment_request,
+    build_memory_enhancement_request,
+)
 from chimera_memory.memory_enhancement_model_client import (
     ANTHROPIC_MESSAGES_ENDPOINT,
     GOOGLE_GENERATE_CONTENT_ENDPOINT,
@@ -56,6 +59,28 @@ def _invocation(provider_order: str, **env: str) -> dict[str, object]:
         }
     )
     return build_enhancement_invocation(_request_payload(), plan)
+
+
+def _authored_invocation(provider_order: str, **env: str) -> dict[str, object]:
+    plan = resolve_enhancement_provider_plan(
+        {
+            "CHIMERA_MEMORY_ENHANCEMENT_PROVIDER_ORDER": provider_order,
+            "CHIMERA_MEMORY_ENHANCEMENT_OPENAI_CREDENTIAL_REF": "oauth:openai-memory",
+            "CHIMERA_MEMORY_ENHANCEMENT_ENABLE_LOCAL_MODEL": "true",
+            **env,
+        }
+    )
+    request = build_authored_memory_enrichment_request(
+        memory_payload={
+            "memory_type": "procedural",
+            "lessons": ["Preserve reference UX behavior."],
+            "entities": {"people": ["Charles"], "projects": ["Hermes"]},
+            "body": "Day 60 slice 2 covered Google OAuth loopback behavior.",
+        },
+        persona="developer/asa",
+        request_id="authored-request-1",
+    )
+    return build_enhancement_invocation(request, plan)
 
 
 def test_metadata_from_model_text_extracts_json_from_wrapped_text() -> None:
@@ -335,6 +360,47 @@ def test_koboldcpp_openai_compatible_omits_json_mode_and_uses_local_sampling_flo
     assert body["top_k"] == 0
     assert body["min_p"] == 0.0
     assert metadata["tools"] == ["koboldcpp"]
+
+
+def test_authored_enrichment_request_uses_narrow_prompt_surface() -> None:
+    captured = {}
+
+    def opener(request, *, timeout):
+        captured["request"] = request
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "entities": [{"name": "Charles", "type": "person", "confidence": 0.9}],
+                                    "topics": ["ux-parity"],
+                                    "dates": ["Day 60", "slice 2"],
+                                    "confidence": 0.9,
+                                    "sensitivity_tier": "standard",
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+
+    ProviderModelMemoryEnhancementClient(opener=opener).invoke(
+        _authored_invocation(
+            "openai_compatible,dry_run",
+            CHIMERA_MEMORY_ENHANCEMENT_OPENAI_COMPATIBLE_ENDPOINT="http://127.0.0.1:5001/v1",
+            CHIMERA_MEMORY_ENHANCEMENT_OPENAI_COMPATIBLE_MODEL="koboldcpp/qwen3-local",
+        )
+    )
+
+    body = json.loads(captured["request"].data.decode("utf-8"))
+    system_prompt = body["messages"][0]["content"]
+    assert "Allowed top-level keys: entities, topics, dates, confidence, sensitivity_tier" in system_prompt
+    assert "action_items" in system_prompt
+    assert "Do not output memory_type, summary, action_items" in system_prompt
+    assert "Action items should be stable imperative directives" not in system_prompt
 
 
 def test_metadata_from_model_text_ignores_leading_think_block() -> None:

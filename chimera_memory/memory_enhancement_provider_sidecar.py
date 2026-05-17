@@ -318,7 +318,7 @@ def _invoke_openai_codex(
     user_prompt = model_client._user_prompt(invocation)
     payload = {
         "model": provider["model"],
-        "instructions": model_client._system_prompt(),
+        "instructions": _model_client_system_prompt(model_client, invocation),
         "input": [{"role": "user", "content": [{"type": "input_text", "text": user_prompt}]}],
         "reasoning": {"effort": "medium", "summary": "auto"},
         "include": ["reasoning.encrypted_content"],
@@ -475,7 +475,7 @@ def _invoke_anthropic_oauth(
 ) -> Mapping[str, Any]:
     model_client = _memory_model_client_module()
     budget = model_client._budget(invocation)
-    system_prompt = _anthropic_oauth_system_prompt(model_client._system_prompt())
+    system_prompt = _anthropic_oauth_system_prompt(_model_client_system_prompt(model_client, invocation))
     payload = {
         "model": provider["model"],
         "system": system_prompt,
@@ -604,7 +604,7 @@ def _invoke_google_cloudcode(
                 response = client.chat.completions.create(
                     model=model,
                     messages=[
-                        {"role": "system", "content": model_client._system_prompt()},
+                        {"role": "system", "content": _model_client_system_prompt(model_client, invocation)},
                         {"role": "user", "content": model_client._user_prompt(invocation)},
                     ],
                     stream=True,
@@ -956,6 +956,13 @@ def _memory_model_client_module() -> Any:
     from chimera_memory import memory_enhancement_model_client as model_client
 
     return model_client
+
+
+def _model_client_system_prompt(model_client: Any, invocation: Mapping[str, Any]) -> str:
+    try:
+        return model_client._system_prompt(invocation)
+    except TypeError:
+        return model_client._system_prompt()
 
 
 if __name__ == "__main__":
