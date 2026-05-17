@@ -92,6 +92,16 @@ def main():
     sub_enhance_provider_sidecar.add_argument("--port", type=int, default=8944, help="Bind port")
     sub_enhance_provider_sidecar.add_argument("--token-env", default="", help="Optional env var containing sidecar HTTP bearer token")
     sub_enhance_provider_sidecar.add_argument("--provider-token-env", default="", help="Optional env var containing the selected model provider token")
+    sub_enhance_grade = enhance_subparsers.add_parser("grade-runs", help="Grade repeated enhancement runs")
+    sub_enhance_grade.add_argument("--input", action="append", required=True, help="JSON or JSONL run file; repeatable")
+    sub_enhance_grade.add_argument(
+        "--expected-action",
+        action="append",
+        default=[],
+        help="Expected core action teaching, e.g. grep-before; repeatable",
+    )
+    sub_enhance_grade.add_argument("--teachings", default="", help="YAML file containing expected action teachings")
+    sub_enhance_grade.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
 
     args = parser.parse_args()
 
@@ -412,6 +422,35 @@ def _run_enhance(args):
             client=client,
             bearer_token=bearer_token,
         )
+        return
+
+    if args.enhance_command == "grade-runs":
+        from .memory_enhancement_grading import (
+            grade_memory_enhancement_records,
+            load_action_teachings,
+            load_grade_records,
+        )
+
+        records = load_grade_records(args.input)
+        expected_actions = load_action_teachings(args.teachings) if args.teachings else args.expected_action
+        result = grade_memory_enhancement_records(
+            records,
+            expected_action_teachings=expected_actions or None,
+        )
+        lines = [
+            f"Models graded: {result['model_count']}",
+            "Passing models: " + (", ".join(result["passing_models"]) if result["passing_models"] else "none"),
+        ]
+        for model in result["models"]:
+            verdict = "PASS" if model["gate"]["pass"] else "FAIL"
+            scores = model["scores"]
+            lines.append(
+                f"{model['model_label']}: {verdict} "
+                f"entity={scores['typed_entities']['pairwise_mean']:.3f} "
+                f"topic={scores['topics']['pairwise_mean']:.3f} "
+                f"actions={'PASS' if scores['action_items']['pass'] else 'FAIL'}"
+            )
+        _emit_json_or_lines(result, json_output=args.json, lines=lines)
         return
 
     print("Missing enhance command. Try: chimera-memory enhance provider-plan", file=sys.stderr)

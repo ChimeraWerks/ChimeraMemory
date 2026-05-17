@@ -277,7 +277,12 @@ def _system_prompt() -> str:
         "tool, organization, place, date. Omit entities below confidence 0.5. "
         "Use canonical stable names instead of paraphrases. Legacy list fields "
         "may mirror the same entities for compatibility. "
-        "Action items should be stable imperative directives. Keep values concise."
+        "Action items should be stable imperative directives. Preserve each "
+        "independent procedural directive separately instead of summarizing several "
+        "directives into one generic item. Keep separate directives for reference "
+        "lookup, live request/response comparison, individual wire-level axes, "
+        "UX parity, error behavior, and retry or failover behavior when present. "
+        "Keep values concise."
     )
 
 

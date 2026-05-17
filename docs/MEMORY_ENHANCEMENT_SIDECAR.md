@@ -343,6 +343,32 @@ The validator rejects any output that:
 - Marks restricted content as standard when deterministic guards identify a
   restricted signal.
 
+## Typed Grading Harness
+
+`chimera-memory enhance grade-runs` grades repeated sidecar outputs against the
+typed contract. It accepts JSONL or JSON arrays of run records and normalizes
+each run through CM's current sidecar post-processor before scoring.
+
+Example:
+
+```text
+chimera-memory enhance grade-runs \
+  --input diagnostics/typed-rerun.jsonl \
+  --teachings research/fixtures/hermes-as-acceptance-fixture-teachings.yaml
+```
+
+The gate checks:
+
+- contract determinism across successful runs
+- topic Jaccard after canonical topic normalization
+- per-type typed-entity Jaccard, mean-weighted across entity types
+- action-item preservation against a fixture-owned teachings YAML
+- coverage: every successful run must include topics, typed entities, and
+  action items
+
+The harness also reports flat typed-entity Jaccard as a diagnostic so reviewers
+can see whether common entities inflated the old-style score.
+
 ## Model Selection
 
 Default order, configurable per user:
