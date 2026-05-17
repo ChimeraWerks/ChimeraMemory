@@ -10,6 +10,7 @@ from chimera_memory.memory_entities import (
     upsert_memory_entity,
     upsert_memory_entity_edge,
 )
+from chimera_memory.memory_file_edges import memory_file_edge_upsert
 from chimera_memory.memory_entity_wiki import (
     memory_entity_wiki_batch,
     memory_entity_wiki_generate,
@@ -110,6 +111,38 @@ def test_entity_wiki_file_mode_writes_generated_cached_view(tmp_path: Path) -> N
     assert "uses" in prompt
     assert "co_occurs_with" not in prompt
     assert str(fixture["hermes"]["id"]) in content
+
+
+def test_entity_wiki_prompt_includes_file_edges_between_linked_files(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+    fixture = _fixture(conn, tmp_path)
+    memory_file_edge_upsert(
+        conn,
+        source_file_path="hermes.md",
+        target_file_path="oauth.md",
+        relation_type="supports",
+        confidence=0.85,
+        classifier_version="test",
+        evidence="Hermes OAuth supports the storage rule.",
+    )
+    client = FakeWikiClient()
+
+    result = memory_entity_wiki_generate(
+        conn,
+        entity_id=fixture["hermes"]["id"],
+        output_dir=str(tmp_path / "wikis"),
+        client=client,
+        env={"CHIMERA_MEMORY_ENHANCEMENT_PROVIDER_ORDER": "dry_run"},
+    )
+
+    assert result["ok"] is True
+    assert result["file_edge_count"] == 1
+    prompt = client.invocations[0]["user_prompt"]
+    assert "file_edges" in prompt
+    assert "Hermes OAuth supports the storage rule." in prompt
+    content = Path(result["path"]).read_text(encoding="utf-8")
+    assert "exclude_from_default_search: true" in content
 
 
 def test_entity_wiki_entity_metadata_mode_updates_entity_json(tmp_path: Path) -> None:

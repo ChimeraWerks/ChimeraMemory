@@ -67,7 +67,8 @@ def memory_entity_wiki_generate(
 
     linked_files = _gather_linked_files(conn, entity["id"], limit=max_linked)
     typed_edges = _gather_typed_edges(conn, entity["id"], limit=100)
-    if not linked_files and not typed_edges:
+    file_edges = _gather_file_edges(conn, [int(row["id"]) for row in linked_files], limit=100)
+    if not linked_files and not typed_edges and not file_edges:
         record_memory_audit_event(
             conn,
             "memory_entity_wiki_skipped",
@@ -85,7 +86,7 @@ def memory_entity_wiki_generate(
         }
 
     plan = resolve_enhancement_provider_plan(os.environ if env is None else env)
-    invocation = _wiki_invocation(entity, linked_files, typed_edges, plan)
+    invocation = _wiki_invocation(entity, linked_files, typed_edges, file_edges, plan)
     if dry_run:
         return {
             "ok": True,
@@ -94,6 +95,7 @@ def memory_entity_wiki_generate(
             "provider": safe_provider_receipt(plan),
             "linked_file_count": len(linked_files),
             "typed_edge_count": len(typed_edges),
+            "file_edge_count": len(file_edges),
             "output_mode": clean_output_mode,
         }
 
@@ -110,6 +112,7 @@ def memory_entity_wiki_generate(
         source_file_ids=source_file_ids,
         linked_file_count=len(linked_files),
         typed_edge_count=len(typed_edges),
+        file_edge_count=len(file_edges),
         provider=safe_provider_receipt(plan),
         actor=actor,
     )
@@ -120,6 +123,7 @@ def memory_entity_wiki_generate(
         "provider": safe_provider_receipt(plan),
         "linked_file_count": len(linked_files),
         "typed_edge_count": len(typed_edges),
+        "file_edge_count": len(file_edges),
         **emitted,
     }
 
@@ -345,6 +349,43 @@ def _gather_typed_edges(conn: sqlite3.Connection, entity_row_id: int, *, limit: 
     ]
 
 
+def _gather_file_edges(conn: sqlite3.Connection, file_ids: list[int], *, limit: int) -> list[dict[str, Any]]:
+    clean_ids = sorted({int(file_id) for file_id in file_ids if int(file_id) > 0})
+    if len(clean_ids) < 2:
+        return []
+    placeholders = ",".join("?" * len(clean_ids))
+    rows = conn.execute(
+        f"""
+        SELECT edge.edge_id, edge.relation_type, edge.confidence,
+               edge.support_count, edge.valid_from, edge.valid_until,
+               edge.evidence, source.id, source.relative_path, target.id, target.relative_path
+        FROM memory_file_edges edge
+        JOIN memory_files source ON source.id = edge.source_file_id
+        JOIN memory_files target ON target.id = edge.target_file_id
+        WHERE edge.source_file_id IN ({placeholders})
+          AND edge.target_file_id IN ({placeholders})
+          AND (edge.valid_until IS NULL OR edge.valid_until = '')
+        ORDER BY edge.support_count DESC, edge.confidence DESC, edge.created_at DESC
+        LIMIT ?
+        """,
+        [*clean_ids, *clean_ids, max(0, min(int(limit), 500))],
+    ).fetchall()
+    return [
+        {
+            "edge_id": row[0],
+            "relation_type": row[1],
+            "confidence": row[2],
+            "support_count": row[3],
+            "valid_from": row[4],
+            "valid_until": row[5],
+            "evidence": str(row[6] or "")[:300],
+            "source": {"id": int(row[7]), "relative_path": row[8]},
+            "target": {"id": int(row[9]), "relative_path": row[10]},
+        }
+        for row in rows
+    ]
+
+
 def _batch_candidates(conn: sqlite3.Connection, *, min_linked: int, limit: int) -> list[dict[str, Any]]:
     rows = conn.execute(
         """
@@ -375,6 +416,7 @@ def _wiki_invocation(
     entity: Mapping[str, Any],
     linked_files: list[dict[str, Any]],
     typed_edges: list[dict[str, Any]],
+    file_edges: list[dict[str, Any]],
     plan: Any,
 ) -> dict[str, Any]:
     request = {
@@ -382,10 +424,11 @@ def _wiki_invocation(
         "entity": _safe_entity_descriptor(entity),
         "linked_file_count": len(linked_files),
         "typed_edge_count": len(typed_edges),
+        "file_edge_count": len(file_edges),
     }
     invocation = build_enhancement_invocation(request, plan)
     invocation["system_prompt"] = _wiki_system_prompt()
-    invocation["user_prompt"] = _wiki_user_prompt(entity, linked_files, typed_edges)
+    invocation["user_prompt"] = _wiki_user_prompt(entity, linked_files, typed_edges, file_edges)
     invocation["raw_json"] = True
     invocation["budget"] = dict(invocation.get("budget") or {})
     invocation["budget"]["max_output_tokens"] = max(2048, int(invocation["budget"].get("max_output_tokens") or 0))
@@ -411,10 +454,12 @@ def _wiki_user_prompt(
     entity: Mapping[str, Any],
     linked_files: list[dict[str, Any]],
     typed_edges: list[dict[str, Any]],
+    file_edges: list[dict[str, Any]],
 ) -> str:
     structure = {
         "entity": _safe_entity_descriptor(entity),
         "typed_edges": typed_edges,
+        "file_edges": file_edges,
         "source_file_ids": [item["id"] for item in linked_files],
     }
     snippets = []
@@ -450,6 +495,7 @@ def _emit_wiki(
     source_file_ids: list[int],
     linked_file_count: int,
     typed_edge_count: int,
+    file_edge_count: int,
     provider: Mapping[str, Any],
     actor: str,
 ) -> dict[str, Any]:
@@ -459,6 +505,7 @@ def _emit_wiki(
         source_file_ids=source_file_ids,
         linked_file_count=linked_file_count,
         typed_edge_count=typed_edge_count,
+        file_edge_count=file_edge_count,
         provider=provider,
     )
     if output_mode == "file":
@@ -495,6 +542,7 @@ def _wiki_page_payload(
     source_file_ids: list[int],
     linked_file_count: int,
     typed_edge_count: int,
+    file_edge_count: int,
     provider: Mapping[str, Any],
 ) -> dict[str, Any]:
     return {
@@ -504,6 +552,7 @@ def _wiki_page_payload(
         "generated_at": _utc_now(),
         "linked_file_count": linked_file_count,
         "typed_edge_count": typed_edge_count,
+        "file_edge_count": file_edge_count,
         "derived_from_file_ids": source_file_ids,
         "provider": {
             "selected_provider": provider.get("selected_provider"),
