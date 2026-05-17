@@ -44,6 +44,7 @@ from .memory_file_edges import (
     memory_file_edge_temporal_sweep,
     memory_file_edge_upsert,
 )
+from .memory_entity_wiki import memory_entity_wiki_batch, memory_entity_wiki_generate
 from .memory_import_atom_blogger import memory_import_atom_blogger_export as _memory_import_atom_blogger_export
 from .memory_import_chatgpt import memory_import_chatgpt_export as _memory_import_chatgpt_export
 from .memory_import_gmail import memory_import_gmail_mbox as _memory_import_gmail_mbox

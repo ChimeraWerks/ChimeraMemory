@@ -1671,6 +1671,101 @@ def create_server():
         return "\n".join(lines)
 
     @server.tool()
+    def memory_entity_wiki_generate(
+        entity_id: int = 0,
+        entity_name: str = "",
+        entity_type: str = "",
+        output_mode: str = "file",
+        output_dir: str = "./wikis",
+        max_linked: int = 25,
+        dry_run: bool = False,
+    ) -> str:
+        """Generate one cached entity wiki page from linked memory files."""
+        _ensure_memory_indexed()
+        from .memory import memory_entity_wiki_generate as _generate
+
+        try:
+            result = _generate(
+                _get_memory_conn(),
+                entity_id=entity_id or None,
+                entity_name=entity_name or None,
+                entity_type=entity_type or None,
+                output_mode=output_mode,
+                output_dir=output_dir,
+                max_linked=max_linked,
+                dry_run=dry_run,
+                actor="mcp",
+            )
+        except ValueError as exc:
+            return f"Entity wiki generation failed: {exc}"
+        if not result.get("ok"):
+            return f"Entity wiki generation failed: {result.get('error', 'unknown error')}"
+        entity = result.get("entity", {})
+        if result.get("status") == "skipped":
+            return (
+                f"Entity wiki skipped for {entity.get('canonical_name', 'unknown')}: "
+                f"{result.get('reason', 'unknown')}"
+            )
+        if result.get("status") == "dry_run":
+            return (
+                f"Entity wiki dry run for {entity.get('canonical_name', 'unknown')}: "
+                f"linked_files={result.get('linked_file_count', 0)} "
+                f"typed_edges={result.get('typed_edge_count', 0)} "
+                f"output_mode={result.get('output_mode')}"
+            )
+        if result.get("output_mode") == "file":
+            return (
+                f"Entity wiki written: {result.get('path')} "
+                f"linked_files={result.get('linked_file_count', 0)} "
+                f"typed_edges={result.get('typed_edge_count', 0)}"
+            )
+        return (
+            f"Entity wiki cached on entity metadata: {entity.get('canonical_name', 'unknown')} "
+            f"linked_files={result.get('linked_file_count', 0)} "
+            f"typed_edges={result.get('typed_edge_count', 0)}"
+        )
+
+    @server.tool()
+    def memory_entity_wiki_batch(
+        min_linked: int = 3,
+        limit: int = 25,
+        output_mode: str = "file",
+        output_dir: str = "./wikis",
+        max_linked: int = 25,
+        dry_run: bool = True,
+    ) -> str:
+        """Batch-generate cached entity wiki pages for entities with enough evidence."""
+        _ensure_memory_indexed()
+        from .memory import memory_entity_wiki_batch as _batch
+
+        try:
+            result = _batch(
+                _get_memory_conn(),
+                min_linked=min_linked,
+                limit=limit,
+                output_mode=output_mode,
+                output_dir=output_dir,
+                max_linked=max_linked,
+                dry_run=dry_run,
+                actor="mcp",
+            )
+        except ValueError as exc:
+            return f"Entity wiki batch failed: {exc}"
+        counts = result.get("status_counts") or {}
+        lines = [
+            f"Entity wiki batch checked {result.get('candidate_count', 0)} candidate(s).",
+            f"Status counts: {counts}",
+        ]
+        for item in result.get("results", [])[: max(0, min(limit, 50))]:
+            entity = item.get("entity") or {}
+            status = item.get("status")
+            if item.get("path"):
+                lines.append(f"- {status}: {entity.get('canonical_name')} -> {item.get('path')}")
+            else:
+                lines.append(f"- {status}: {entity.get('canonical_name')}")
+        return "\n".join(lines)
+
+    @server.tool()
     def memory_live_retrieval_check(
         current_context: str,
         previous_context: str = "",
