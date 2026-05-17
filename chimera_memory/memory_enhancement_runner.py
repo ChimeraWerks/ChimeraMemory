@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import time
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
@@ -52,6 +53,17 @@ def _run_call_cap(env: Mapping[str, str], plan: EnhancementProviderPlan) -> int:
     return max(0, min(parsed, int(plan.budget.max_jobs_per_run), int(plan.budget.per_minute_call_cap)))
 
 
+def _run_seconds_budget(env: Mapping[str, str]) -> float | None:
+    raw = str(env.get("CHIMERA_MEMORY_ENHANCEMENT_MAX_RUN_SECONDS") or "").strip()
+    if not raw:
+        return None
+    try:
+        parsed = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, parsed)
+
+
 def run_memory_enhancement_provider_batch(
     conn: sqlite3.Connection,
     *,
@@ -68,14 +80,20 @@ def run_memory_enhancement_provider_batch(
     source_env = env or os.environ
     plan = resolve_enhancement_provider_plan(source_env)
     llm_call_cap = _run_call_cap(source_env, plan)
+    wall_clock_budget = _run_seconds_budget(source_env)
+    started_at = time.monotonic()
     max_jobs = plan.budget.max_jobs_per_run if limit is None else min(limit, plan.budget.max_jobs_per_run)
     max_jobs = min(max_jobs, llm_call_cap)
     max_jobs = max(0, max_jobs)
     processed: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     llm_call_count = 0
+    wall_clock_stopped = False
 
     for _ in range(max_jobs):
+        if wall_clock_budget is not None and time.monotonic() - started_at >= wall_clock_budget:
+            wall_clock_stopped = True
+            break
         job = memory_enhancement_claim_next(conn, persona=persona)
         if job is None:
             break
@@ -153,6 +171,9 @@ def run_memory_enhancement_provider_batch(
         "failure_count": len(failures),
         "llm_call_count": llm_call_count,
         "llm_call_cap": llm_call_cap,
+        "wall_clock_seconds": round(time.monotonic() - started_at, 3),
+        "wall_clock_budget_seconds": wall_clock_budget,
+        "wall_clock_stopped": wall_clock_stopped,
     }
 
 

@@ -241,14 +241,15 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
     content_fingerprint = normalized_content_fingerprint(content)
     path_str = str(full_path).replace("\\", "/")
 
+    fm, body = parse_frontmatter(content)
+    idempotency_key = str(fm.get("idempotency_key") or "").strip() or None
     row = conn.execute(
-        "SELECT id, content_hash FROM memory_files WHERE path = ?", (path_str,)
+        "SELECT id, content_hash, idempotency_key FROM memory_files WHERE path = ?", (path_str,)
     ).fetchone()
 
-    if row and row[1] == content_hash:
+    if row and row[1] == content_hash and row[2] == idempotency_key:
         return False
 
-    fm, body = parse_frontmatter(content)
     tags_json = json.dumps(fm.get("tags", []))
     governance = governance_from_frontmatter(fm)
     now = time.time()
@@ -262,7 +263,7 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
                 fm_type=?, fm_importance=?, fm_created=?, fm_last_accessed=?,
                 fm_access_count=?, fm_status=?, fm_about=?, fm_tags=?,
                 fm_entity=?, fm_relationship_temperature=?, fm_trust_level=?,
-                fm_trend=?, fm_failure_count=?, content_fingerprint=?,
+                fm_trend=?, fm_failure_count=?, idempotency_key=?, content_fingerprint=?,
                 fm_provenance_status=?, fm_confidence=?, fm_lifecycle_status=?,
                 fm_review_status=?, fm_sensitivity_tier=?,
                 fm_can_use_as_instruction=?, fm_can_use_as_evidence=?,
@@ -275,7 +276,7 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
             fm.get("status", "active"), fm.get("about"), tags_json,
             fm.get("entity"), fm.get("relationship_temperature"),
             fm.get("trust_level"), fm.get("trend"),
-            fm.get("failure_count", 0), content_fingerprint,
+            fm.get("failure_count", 0), idempotency_key, content_fingerprint,
             governance["provenance_status"], governance["confidence"],
             governance["lifecycle_status"], governance["review_status"],
             governance["sensitivity_tier"], governance["can_use_as_instruction"],
@@ -289,12 +290,12 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
                 fm_type, fm_importance, fm_created, fm_last_accessed,
                 fm_access_count, fm_status, fm_about, fm_tags,
                 fm_entity, fm_relationship_temperature, fm_trust_level,
-                fm_trend, fm_failure_count, content_fingerprint,
+                fm_trend, fm_failure_count, idempotency_key, content_fingerprint,
                 fm_provenance_status, fm_confidence, fm_lifecycle_status,
                 fm_review_status, fm_sensitivity_tier,
                 fm_can_use_as_instruction, fm_can_use_as_evidence,
                 fm_requires_user_confirmation
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             path_str, persona, relative_path, content_hash, now,
             fm.get("type"), fm.get("importance"), fm.get("created"),
@@ -302,7 +303,7 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
             fm.get("status", "active"), fm.get("about"), tags_json,
             fm.get("entity"), fm.get("relationship_temperature"),
             fm.get("trust_level"), fm.get("trend"),
-            fm.get("failure_count", 0), content_fingerprint,
+            fm.get("failure_count", 0), idempotency_key, content_fingerprint,
             governance["provenance_status"], governance["confidence"],
             governance["lifecycle_status"], governance["review_status"],
             governance["sensitivity_tier"], governance["can_use_as_instruction"],

@@ -89,10 +89,16 @@ def build_authored_memory_write_plan(
     memory_payload = request["memory_payload"]
     memory_type = str(normalized.get("memory_type") or "procedural")
     memory_id = _slugify(memory_payload.get("memory_id") or normalized.get("summary") or "authored-memory")
+    idempotency_key = str(
+        memory_payload.get("idempotency_key")
+        or payload.get("idempotency_key")
+        or f"authored-memory:{persona}:{memory_id}"
+    ).strip()
     target_relative_path = _relative_path_for(memory_type, memory_id, relative_path)
     frontmatter = _frontmatter_from_payload(
         persona=persona,
         memory_id=memory_id,
+        idempotency_key=idempotency_key,
         memory_payload=memory_payload,
         normalized=normalized,
     )
@@ -109,6 +115,7 @@ def build_authored_memory_write_plan(
         "schema_version": AUTHORED_MEMORY_WRITE_SCHEMA_VERSION,
         "persona": persona,
         "relative_path": target_relative_path,
+        "idempotency_key": idempotency_key,
         "frontmatter": frontmatter,
         "memory_payload": memory_payload,
         "source_refs": normalized.get("source_refs", []),
@@ -219,6 +226,7 @@ def _frontmatter_from_payload(
     *,
     persona: str,
     memory_id: str,
+    idempotency_key: str,
     memory_payload: Mapping[str, Any],
     normalized: Mapping[str, Any],
 ) -> dict[str, Any]:
@@ -248,6 +256,7 @@ def _frontmatter_from_payload(
         "authored_writeback_schema_version": AUTHORED_WRITEBACK_SCHEMA_VERSION,
         "payload_schema_version": memory_payload.get("payload_schema_version") or "",
         "memory_id": memory_id,
+        "idempotency_key": idempotency_key,
         "author": memory_payload.get("author") or persona,
         "source_refs": source_refs,
         "models_used": models_used,

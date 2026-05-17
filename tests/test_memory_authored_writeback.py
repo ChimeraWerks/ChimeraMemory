@@ -93,6 +93,10 @@ def test_build_authored_memory_write_plan_uses_nested_fixture_shape() -> None:
     assert plan["frontmatter"]["memory_payload"]["lessons"][1]["teaching"] == (
         "Each wire-level axis should be checked independently."
     )
+    assert plan["frontmatter"]["idempotency_key"] == (
+        "authored-memory:sarah:hermes-as-acceptance-fixture-not-prior-art"
+    )
+    assert plan["idempotency_key"] == plan["frontmatter"]["idempotency_key"]
     assert plan["request_payload"]["source_refs"][0]["kind"] == "discord-msg"
     assert plan["request_payload"]["contract"]["action_items"] == [
         "Check each wire-level axis independently"
@@ -147,10 +151,11 @@ def test_memory_authored_writeback_writes_indexes_and_queues(tmp_path: Path) -> 
     assert "*id" not in content
 
     row = conn.execute(
-        "SELECT id, relative_path FROM memory_files WHERE id = ?",
+        "SELECT id, relative_path, idempotency_key FROM memory_files WHERE id = ?",
         (result["file_id"],),
     ).fetchone()
     assert row[1] == result["relative_path"]
+    assert row[2] == "authored-memory:sarah:hermes-as-acceptance-fixture-not-prior-art"
 
     job = result["enrichment_job"]["job"]
     assert job["file_id"] == result["file_id"]

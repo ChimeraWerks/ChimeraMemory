@@ -183,6 +183,51 @@ def test_provider_runner_respects_hard_llm_call_cap_before_claiming(tmp_path: Pa
     assert statuses == ["pending", "pending"]
 
 
+def test_provider_runner_respects_wall_clock_budget_before_next_claim(
+    monkeypatch, tmp_path: Path
+) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+    _index_runner_memory(conn, tmp_path, "one.md")
+    _index_runner_memory(conn, tmp_path, "two.md")
+    memory_enhancement_enqueue(conn, file_path="one.md")
+    memory_enhancement_enqueue(conn, file_path="two.md")
+    client = StaticMemoryEnhancementClient(
+        [
+            {"memory_type": "semantic", "summary": "first"},
+            {"memory_type": "semantic", "summary": "second"},
+        ]
+    )
+    ticks = iter([0.0, 0.0, 2.0, 2.0])
+    monkeypatch.setattr(
+        "chimera_memory.memory_enhancement_runner.time.monotonic",
+        lambda: next(ticks),
+    )
+
+    receipt = run_memory_enhancement_provider_batch(
+        conn,
+        client=client,
+        env={
+            "CHIMERA_MEMORY_ENHANCEMENT_PROVIDER_ORDER": "dry_run",
+            "CHIMERA_MEMORY_ENHANCEMENT_MAX_JOBS_PER_RUN": "10",
+            "CHIMERA_MEMORY_ENHANCEMENT_MAX_RUN_SECONDS": "1",
+        },
+        limit=10,
+    )
+
+    assert receipt["processed_count"] == 1
+    assert receipt["wall_clock_stopped"] is True
+    assert receipt["wall_clock_budget_seconds"] == 1.0
+    assert len(client.invocations) == 1
+    statuses = [
+        row[0]
+        for row in conn.execute(
+            "SELECT status FROM memory_enhancement_jobs ORDER BY path"
+        ).fetchall()
+    ]
+    assert statuses == ["succeeded", "pending"]
+
+
 def test_provider_runner_defers_claimed_job_when_client_cost_cap_hits(tmp_path: Path) -> None:
     conn = sqlite3.connect(":memory:")
     init_memory_tables(conn)
