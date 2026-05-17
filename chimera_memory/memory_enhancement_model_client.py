@@ -121,7 +121,7 @@ class ProviderModelMemoryEnhancementClient:
             self._increment_call_count()
         choices = response.get("choices") if isinstance(response.get("choices"), list) else []
         message = choices[0].get("message") if choices and isinstance(choices[0], Mapping) else {}
-        return _metadata_from_model_text(message.get("content"))
+        return _metadata_from_model_text(message.get("content"), raw_json=bool(invocation.get("raw_json")))
 
     def _invoke_anthropic(self, invocation: Mapping[str, Any], provider: Mapping[str, str]) -> Mapping[str, Any]:
         _require_bearer_token(self.bearer_token)
@@ -148,7 +148,7 @@ class ProviderModelMemoryEnhancementClient:
             self._increment_call_count()
         content = response.get("content") if isinstance(response.get("content"), list) else []
         first = content[0] if content and isinstance(content[0], Mapping) else {}
-        return _metadata_from_model_text(first.get("text"))
+        return _metadata_from_model_text(first.get("text"), raw_json=bool(invocation.get("raw_json")))
 
     def _invoke_google(self, invocation: Mapping[str, Any], provider: Mapping[str, str]) -> Mapping[str, Any]:
         _require_bearer_token(self.bearer_token)
@@ -182,7 +182,7 @@ class ProviderModelMemoryEnhancementClient:
         content = first.get("content") if isinstance(first.get("content"), Mapping) else {}
         parts = content.get("parts") if isinstance(content.get("parts"), list) else []
         text = "".join(str(part.get("text") or "") for part in parts if isinstance(part, Mapping))
-        return _metadata_from_model_text(text)
+        return _metadata_from_model_text(text, raw_json=bool(invocation.get("raw_json")))
 
     def _invoke_openrouter(self, invocation: Mapping[str, Any], provider: Mapping[str, str]) -> Mapping[str, Any]:
         _require_bearer_token(self.bearer_token)
@@ -216,7 +216,7 @@ class ProviderModelMemoryEnhancementClient:
             )
         finally:
             self._increment_call_count()
-        return _metadata_from_model_text(response.get("response"))
+        return _metadata_from_model_text(response.get("response"), raw_json=bool(invocation.get("raw_json")))
 
     def _invoke_openai_compatible(self, invocation: Mapping[str, Any], provider: Mapping[str, str]) -> Mapping[str, Any]:
         endpoint = provider.get("endpoint") or LMSTUDIO_DEFAULT_ENDPOINT
@@ -268,7 +268,7 @@ class ProviderModelMemoryEnhancementClient:
             self._increment_call_count()
         choices = response.get("choices") if isinstance(response.get("choices"), list) else []
         message = choices[0].get("message") if choices and isinstance(choices[0], Mapping) else {}
-        return _metadata_from_model_text(message.get("content"))
+        return _metadata_from_model_text(message.get("content"), raw_json=bool(invocation.get("raw_json")))
 
 
 
@@ -315,6 +315,10 @@ def _int(value: object, default: int) -> int:
 
 
 def _system_prompt(invocation: Mapping[str, Any] | None = None) -> str:
+    if isinstance(invocation, Mapping):
+        override = str(invocation.get("system_prompt") or "").strip()
+        if override:
+            return override
     if _is_authored_enrichment_task(invocation):
         return _authored_enrichment_system_prompt()
     return (
@@ -376,11 +380,14 @@ def _authored_enrichment_system_prompt() -> str:
 
 
 def _user_prompt(invocation: Mapping[str, Any]) -> str:
+    override = str(invocation.get("user_prompt") or "").strip()
+    if override:
+        return override
     request = invocation.get("request") if isinstance(invocation.get("request"), Mapping) else {}
     return json.dumps(dict(request), separators=(",", ":"), sort_keys=True)
 
 
-def _metadata_from_model_text(value: object) -> Mapping[str, Any]:
+def _metadata_from_model_text(value: object, *, raw_json: bool = False) -> Mapping[str, Any]:
     text = str(value or "").strip()
     text = _extract_json_text(text)
     try:
@@ -389,6 +396,8 @@ def _metadata_from_model_text(value: object) -> Mapping[str, Any]:
         raise RuntimeError("memory enhancement provider returned invalid JSON") from exc
     if not isinstance(payload, dict):
         raise RuntimeError("memory enhancement provider returned invalid JSON")
+    if raw_json:
+        return payload
     return normalize_memory_enhancement_response(payload)
 
 

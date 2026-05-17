@@ -138,6 +138,43 @@ def test_openai_provider_client_builds_json_mode_chat_request_without_leaking_to
     assert fake_token not in str(metadata)
 
 
+def test_provider_client_raw_json_uses_prompt_overrides() -> None:
+    ProviderModelMemoryEnhancementClient.reset_call_count()
+    fake_token = "TEST_ONLY_OPENAI_TOKEN"
+    captured = {}
+
+    def opener(request, *, timeout):
+        captured["request"] = request
+        return FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "relation": "supports",
+                                    "direction": "A_to_B",
+                                    "confidence": 0.91,
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+        )
+
+    invocation = _invocation("openai,dry_run")
+    invocation["system_prompt"] = "classify edges only"
+    invocation["user_prompt"] = "A supports B?"
+    invocation["raw_json"] = True
+    metadata = ProviderModelMemoryEnhancementClient(bearer_token=fake_token, opener=opener).invoke(invocation)
+
+    body = json.loads(captured["request"].data.decode("utf-8"))
+    assert body["messages"][0]["content"] == "classify edges only"
+    assert body["messages"][1]["content"] == "A supports B?"
+    assert metadata == {"relation": "supports", "direction": "A_to_B", "confidence": 0.91}
+
+
 def test_cost_cap_blocks_invocation_before_network(monkeypatch) -> None:
     ProviderModelMemoryEnhancementClient.reset_call_count()
     monkeypatch.setenv("CHIMERA_MEMORY_ENHANCEMENT_MAX_CALLS", "0")

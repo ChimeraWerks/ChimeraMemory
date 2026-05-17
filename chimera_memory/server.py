@@ -1594,6 +1594,52 @@ def create_server():
         return "\n".join(lines)
 
     @server.tool()
+    def memory_edge_classify_batch(
+        persona: str = "",
+        limit: int = 20,
+        min_support: int = 2,
+        min_confidence: float = 0.75,
+        dry_run: bool = True,
+        hybrid: bool = True,
+    ) -> str:
+        """Classify candidate typed reasoning edges between memory files."""
+        _ensure_memory_indexed()
+        from .memory_enhancement_provider_sidecar import ResolvingMemoryEnhancementProviderClient
+        from .memory_file_edge_classifier import run_memory_file_edge_classifier_batch
+
+        selected_persona = (persona or os.environ.get("TRANSCRIPT_PERSONA") or "").strip() or None
+        result = run_memory_file_edge_classifier_batch(
+            _get_memory_conn(),
+            client=ResolvingMemoryEnhancementProviderClient(),
+            persona=selected_persona,
+            limit=limit,
+            min_support=min_support,
+            min_confidence=min_confidence,
+            dry_run=dry_run,
+            hybrid=hybrid,
+            actor="mcp",
+        )
+        verb = "Would upsert" if result.get("dry_run") else "Upserted"
+        counts = result.get("status_counts") or {}
+        lines = [
+            f"Edge classifier checked {result['candidate_count']} candidate pair(s).",
+            f"LLM calls: {result['llm_call_count']}",
+            f"Status counts: {counts}",
+        ]
+        for item in result.get("results", [])[: max(0, min(limit, 50))]:
+            status = item.get("status")
+            if status in {"would_insert", "inserted"}:
+                lines.append(
+                    f"- {verb}: {item.get('label', '')} "
+                    f"conf={float(item.get('confidence') or 0.0):.2f}"
+                )
+            else:
+                lines.append(
+                    f"- {status}: {item.get('source_path', '')} + {item.get('target_path', '')}"
+                )
+        return "\n".join(lines)
+
+    @server.tool()
     def memory_live_retrieval_check(
         current_context: str,
         previous_context: str = "",

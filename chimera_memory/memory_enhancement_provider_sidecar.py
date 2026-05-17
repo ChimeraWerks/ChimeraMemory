@@ -339,7 +339,7 @@ def _invoke_openai_codex(
         timeout_seconds=budget.timeout_seconds,
         model_client=model_client,
     )
-    return model_client._metadata_from_model_text(response_text)
+    return _model_client_parse_response(model_client, invocation, response_text)
 
 
 def _post_openai_codex_stream(
@@ -497,7 +497,7 @@ def _invoke_anthropic_oauth(
     )
     content = response.get("content") if isinstance(response.get("content"), list) else []
     first = content[0] if content and isinstance(content[0], Mapping) else {}
-    return model_client._metadata_from_model_text(first.get("text"))
+    return _model_client_parse_response(model_client, invocation, first.get("text"))
 
 
 def _anthropic_oauth_system_prompt(system_prompt: str) -> list[dict[str, str]]:
@@ -613,7 +613,7 @@ def _invoke_google_cloudcode(
                     timeout=budget.timeout_seconds,
                 )
                 text = _hermes_google_response_text(response)
-                return model_client._metadata_from_model_text(text)
+                return _model_client_parse_response(model_client, invocation, text)
             except Exception as exc:
                 runtime_error = _runtime_error_from_hermes_google_error(exc)
                 if not _google_cloudcode_model_retryable(str(runtime_error)):
@@ -940,7 +940,7 @@ def _google_cloudcode_current_tier(response: Mapping[str, Any]) -> str:
 
 def _metadata_from_google_cloudcode_response(response: Mapping[str, Any], model_client: Any) -> Mapping[str, Any]:
     text = _google_response_text(response)
-    return model_client._metadata_from_model_text(text)
+    return _model_client_parse_response(model_client, {}, text)
 
 
 def _google_response_text(response: Mapping[str, Any]) -> str:
@@ -963,6 +963,14 @@ def _model_client_system_prompt(model_client: Any, invocation: Mapping[str, Any]
         return model_client._system_prompt(invocation)
     except TypeError:
         return model_client._system_prompt()
+
+
+def _model_client_parse_response(model_client: Any, invocation: Mapping[str, Any], text: object) -> Mapping[str, Any]:
+    raw_json = bool(invocation.get("raw_json")) if isinstance(invocation, Mapping) else False
+    try:
+        return model_client._metadata_from_model_text(text, raw_json=raw_json)
+    except TypeError:
+        return model_client._metadata_from_model_text(text)
 
 
 if __name__ == "__main__":
