@@ -246,6 +246,21 @@ def test_index_file_adds_memory_payload_to_fts(tmp_path: Path) -> None:
     assert [item["relative_path"] for item in results] == ["memory.md"]
 
 
+def test_memory_search_accepts_natural_language_question(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+    memory_file = tmp_path / "memory.md"
+    memory_file.write_text(
+        "---\ntype: procedural\nimportance: 9\n---\n"
+        "Hermes OAuth lift method uses verbatim upstream code.\n",
+        encoding="utf-8",
+    )
+    assert index_file(conn, "asa", "memory.md", memory_file)
+
+    results = memory_search(conn, "What's the Hermes OAuth lift method?")
+    assert results and results[0]["relative_path"] == "memory.md"
+
+
 def test_index_file_refreshes_old_memory_payload_fts(tmp_path: Path) -> None:
     conn = sqlite3.connect(":memory:")
     init_memory_tables(conn)

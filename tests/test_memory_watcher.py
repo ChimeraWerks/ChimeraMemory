@@ -35,7 +35,7 @@ def _search_paths(db, query):
 def run():
     root = Path(tempfile.mkdtemp(prefix="chimera_watcher_"))
     personas = root / "personas"
-    persona_mem = personas / "tester" / "memory" / "procedural"
+    persona_mem = personas / "developer" / "tester" / "memory" / "procedural"
     persona_mem.mkdir(parents=True)
     (root / "shared").mkdir()
 

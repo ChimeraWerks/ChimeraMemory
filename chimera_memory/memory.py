@@ -47,6 +47,7 @@ from .memory_file_edges import (
     memory_file_edge_upsert,
 )
 from .memory_entity_wiki import memory_entity_wiki_batch, memory_entity_wiki_generate
+from .sanitizer import build_fts_query
 from .memory_import_atom_blogger import memory_import_atom_blogger_export as _memory_import_atom_blogger_export
 from .memory_import_chatgpt import memory_import_chatgpt_export as _memory_import_chatgpt_export
 from .memory_import_gmail import memory_import_gmail_mbox as _memory_import_gmail_mbox
@@ -358,7 +359,10 @@ def discover_files(personas_dir: Path) -> list[tuple[str, str, Path]]:
                 continue
             if scope_persona and sub.name != scope_persona:
                 continue
-            _walk_for_files(sub, sub.name, sub, results)
+            for index_root_name in sorted(MEMORY_DIRS - {"shared"}):
+                index_root = sub / index_root_name
+                if index_root.exists() and index_root.is_dir():
+                    _walk_for_files(index_root, sub.name, sub, results)
 
     shared_dir = personas_dir.parent / "shared"
     if shared_dir.exists():
@@ -719,11 +723,15 @@ def memory_search(
     """Full-text search across memory files."""
     from .cognitive import reinforce_on_access
 
+    fts_query = build_fts_query(query.split())
+    if not fts_query:
+        return []
+
     conditions = [
         "memory_fts MATCH ?",
         "(? OR COALESCE(f.fm_exclude_from_default_search, 0) = 0)",
     ]
-    params: list[object] = [query, int(bool(include_synthesis))]
+    params: list[object] = [fts_query, int(bool(include_synthesis))]
     if persona:
         conditions.append("f.persona = ?")
         params.append(persona)
@@ -2031,6 +2039,8 @@ def start_memory_watcher(db, personas_dir: Path):
             return None
         # Privacy boundary: skip files belonging to other personas
         if _scope_persona and parts[1] != _scope_persona:
+            return None
+        if parts[2] not in (MEMORY_DIRS - {"shared"}):
             return None
         sub_root = personas_root / parts[0] / parts[1]
         try:

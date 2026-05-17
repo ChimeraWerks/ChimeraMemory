@@ -63,11 +63,13 @@ def run():
 
     asa_file = personas / "developer" / "asa" / "memory" / "procedural" / "asa.md"
     sarah_file = personas / "researcher" / "sarah" / "memory" / "procedural" / "sarah.md"
+    asa_diagnostic = personas / "developer" / "asa" / "diagnostics" / "snapshot.md"
     shared_file = root / "shared" / "team.md"
 
-    _write_memory(asa_file, "asa private scope marker")
-    _write_memory(sarah_file, "sarah private scope marker")
-    _write_memory(shared_file, "shared team scope marker")
+    _write_memory(asa_file, "asaprivatescopemarker")
+    _write_memory(sarah_file, "sarahprivatescopemarker")
+    _write_memory(asa_diagnostic, "asadiagnosticsnapshotmarker")
+    _write_memory(shared_file, "sharedteamscopemarker")
 
     print("=== SCOPED FULL REINDEX ===")
     old = _with_persona("asa")
@@ -77,9 +79,10 @@ def run():
             init_memory_tables(conn)
             full_reindex(conn, personas, embed=False)
 
-            _check("Asa memory indexed", _search(conn, "asa private scope marker") == [("asa", "memory/procedural/asa.md")])
-            _check("Shared memory indexed", _search(conn, "shared team scope marker") == [("shared", "team.md")])
-            _check("Sarah memory excluded", _search(conn, "sarah private scope marker") == [])
+            _check("Asa memory indexed", _search(conn, "asaprivatescopemarker") == [("asa", "memory/procedural/asa.md")])
+            _check("Shared memory indexed", _search(conn, "sharedteamscopemarker") == [("shared", "team.md")])
+            _check("Sarah memory excluded", _search(conn, "sarahprivatescopemarker") == [])
+            _check("Diagnostics excluded from memory index", _search(conn, "asadiagnosticsnapshotmarker") == [])
 
         print("\n=== CLEANUP OTHER PERSONAS ===")
         mixed_db = TranscriptDB(root / "mixed.db")
@@ -89,9 +92,9 @@ def run():
             full_reindex(conn, personas, embed=False)
             old = _with_persona("asa")
 
-            before = _search(conn, "sarah private scope marker")
+            before = _search(conn, "sarahprivatescopemarker")
             counts = cleanup_other_personas(conn, "asa")
-            after = _search(conn, "sarah private scope marker")
+            after = _search(conn, "sarahprivatescopemarker")
 
             _check("Unscoped DB initially contains Sarah", before == [("sarah", "memory/procedural/sarah.md")])
             _check("Cleanup removes Sarah rows", after == [] and counts.get("memory_files", 0) >= 1)
@@ -108,17 +111,22 @@ def run():
             try:
                 _write_memory(
                     personas / "researcher" / "sarah" / "memory" / "procedural" / "sarah-new.md",
-                    "sarah live watcher marker",
+                    "sarahlivewatchermarker",
                 )
                 _write_memory(
                     personas / "developer" / "asa" / "memory" / "procedural" / "asa-new.md",
-                    "asa live watcher marker",
+                    "asalivewatchermarker",
+                )
+                _write_memory(
+                    personas / "developer" / "asa" / "diagnostics" / "asa-diagnostic.md",
+                    "asalivediagnosticmarker",
                 )
                 time.sleep(2.0)
                 with watcher_db.connection() as conn:
                     init_memory_tables(conn)
-                    _check("Watcher indexes scoped persona", _search(conn, "asa live watcher marker") == [("asa", "memory/procedural/asa-new.md")])
-                    _check("Watcher ignores other persona", _search(conn, "sarah live watcher marker") == [])
+                    _check("Watcher indexes scoped persona", _search(conn, "asalivewatchermarker") == [("asa", "memory/procedural/asa-new.md")])
+                    _check("Watcher ignores other persona", _search(conn, "sarahlivewatchermarker") == [])
+                    _check("Watcher ignores diagnostics", _search(conn, "asalivediagnosticmarker") == [])
             finally:
                 observer.stop()
                 observer.join(timeout=2)
