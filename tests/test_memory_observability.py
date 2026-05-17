@@ -40,6 +40,36 @@ def test_memory_search_records_recall_trace_and_audit_items(tmp_path: Path) -> N
     assert "memory_returned" in event_types
 
 
+def test_memory_search_excludes_generated_synthesis_by_default(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+
+    atom = tmp_path / "atom.md"
+    atom.write_text(
+        "---\ntype: procedural\nimportance: 8\n---\nshared synthesis marker\n",
+        encoding="utf-8",
+    )
+    wiki = tmp_path / "wiki.md"
+    wiki.write_text(
+        "---\ntype: generated_entity_wiki\nexclude_from_default_search: true\n---\nshared synthesis marker\n",
+        encoding="utf-8",
+    )
+    assert index_file(conn, "asa", "atom.md", atom)
+    assert index_file(conn, "asa", "wiki.md", wiki)
+
+    default_results = memory_search(conn, "shared synthesis", persona="asa", limit=10)
+    assert [row["relative_path"] for row in default_results] == ["atom.md"]
+
+    with_synthesis = memory_search(
+        conn,
+        "shared synthesis",
+        persona="asa",
+        limit=10,
+        include_synthesis=True,
+    )
+    assert {row["relative_path"] for row in with_synthesis} == {"atom.md", "wiki.md"}
+
+
 def test_record_memory_recall_trace_handles_empty_results() -> None:
     conn = sqlite3.connect(":memory:")
     init_memory_tables(conn)

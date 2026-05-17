@@ -79,6 +79,7 @@ def test_init_memory_tables_migrates_legacy_memory_files_schema() -> None:
         "fm_can_use_as_instruction",
         "fm_can_use_as_evidence",
         "fm_requires_user_confirmation",
+        "fm_exclude_from_default_search",
     } <= columns
 
     row = conn.execute("SELECT updated_at FROM memory_files WHERE path = ?", ("C:/tmp/memory.md",)).fetchone()
@@ -94,6 +95,7 @@ def test_init_memory_tables_migrates_legacy_memory_files_schema() -> None:
     assert "idx_mf_review_status" in indexes
     assert "idx_mf_sensitivity_tier" in indexes
     assert "idx_mf_instruction_use" in indexes
+    assert "idx_mf_default_search" in indexes
     assert "memory_file_edges" in _table_names(conn)
 
 

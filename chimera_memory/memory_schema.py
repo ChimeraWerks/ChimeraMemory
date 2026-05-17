@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS memory_files (
     fm_sensitivity_tier TEXT DEFAULT 'standard',
     fm_can_use_as_instruction INTEGER DEFAULT 1,
     fm_can_use_as_evidence INTEGER DEFAULT 1,
-    fm_requires_user_confirmation INTEGER DEFAULT 0
+    fm_requires_user_confirmation INTEGER DEFAULT 0,
+    fm_exclude_from_default_search INTEGER DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_mf_persona ON memory_files(persona);
@@ -93,6 +94,10 @@ CREATE INDEX IF NOT EXISTS idx_mf_instruction_use
 ON memory_files(fm_can_use_as_instruction)
 WHERE fm_can_use_as_instruction = 1;
 
+CREATE INDEX IF NOT EXISTS idx_mf_default_search
+ON memory_files(persona, fm_importance DESC)
+WHERE fm_exclude_from_default_search = 0 OR fm_exclude_from_default_search IS NULL;
+
 CREATE TRIGGER IF NOT EXISTS memory_files_ai_updated_at
 AFTER INSERT ON memory_files
 WHEN NEW.updated_at IS NULL
@@ -111,7 +116,8 @@ AFTER UPDATE OF
     fm_failure_count, idempotency_key, content_fingerprint,
     fm_provenance_status, fm_confidence, fm_lifecycle_status,
     fm_review_status, fm_sensitivity_tier, fm_can_use_as_instruction,
-    fm_can_use_as_evidence, fm_requires_user_confirmation
+    fm_can_use_as_evidence, fm_requires_user_confirmation,
+    fm_exclude_from_default_search
 ON memory_files
 BEGIN
     UPDATE memory_files
@@ -481,6 +487,12 @@ def _migrate_memory_files_schema(conn: sqlite3.Connection) -> None:
         "fm_requires_user_confirmation",
         "fm_requires_user_confirmation INTEGER",
     )
+    _ensure_memory_file_column(
+        conn,
+        columns,
+        "fm_exclude_from_default_search",
+        "fm_exclude_from_default_search INTEGER",
+    )
     conn.execute(
         """
         UPDATE memory_files
@@ -497,6 +509,7 @@ def _migrate_memory_files_schema(conn: sqlite3.Connection) -> None:
                fm_sensitivity_tier = COALESCE(fm_sensitivity_tier, 'standard'),
                fm_can_use_as_instruction = COALESCE(fm_can_use_as_instruction, 1),
                fm_can_use_as_evidence = COALESCE(fm_can_use_as_evidence, 1),
-               fm_requires_user_confirmation = COALESCE(fm_requires_user_confirmation, 0)
+               fm_requires_user_confirmation = COALESCE(fm_requires_user_confirmation, 0),
+               fm_exclude_from_default_search = COALESCE(fm_exclude_from_default_search, 0)
         """
     )

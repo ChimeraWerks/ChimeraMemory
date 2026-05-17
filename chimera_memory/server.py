@@ -638,11 +638,22 @@ def create_server():
                 _logging.getLogger(__name__).exception("Failed to start memory file watcher")
 
     @server.tool()
-    def memory_search(query: str, persona: str | None = None, limit: int = 20) -> str:
+    def memory_search(
+        query: str,
+        persona: str | None = None,
+        limit: int = 20,
+        include_synthesis: bool = False,
+    ) -> str:
         """Full-text search across all persona memory files. Returns paths, snippets, and metadata."""
         _ensure_memory_indexed()
         from .memory import memory_search as _search
-        results = _search(_get_memory_conn(), query, persona, limit)
+        results = _search(
+            _get_memory_conn(),
+            query,
+            persona,
+            limit,
+            include_synthesis=include_synthesis,
+        )
         if not results:
             return "No memories found matching your query."
         lines = []
@@ -660,6 +671,7 @@ def create_server():
         status: str | None = None, tag: str | None = None,
         about: str | None = None, sort_by: str = "importance",
         sort_order: str = "DESC", limit: int = 50,
+        include_synthesis: bool = False,
     ) -> str:
         """Query memories by frontmatter fields (type, importance, status, tags, etc)."""
         _ensure_memory_indexed()
@@ -667,7 +679,8 @@ def create_server():
         results = _query(_get_memory_conn(), persona=persona, fm_type=type,
                          min_importance=min_importance, max_importance=max_importance,
                          status=status, tag=tag, about=about, sort_by=sort_by,
-                         sort_order=sort_order, limit=limit)
+                         sort_order=sort_order, limit=limit,
+                         include_synthesis=include_synthesis)
         if not results:
             return "No memories match your criteria."
         lines = []
@@ -677,11 +690,22 @@ def create_server():
         return "\n".join(lines)
 
     @server.tool()
-    def memory_recall(concept: str, persona: str | None = None, limit: int = 10) -> str:
+    def memory_recall(
+        concept: str,
+        persona: str | None = None,
+        limit: int = 10,
+        include_synthesis: bool = False,
+    ) -> str:
         """Semantic recall: find memories most similar to a concept or question. Uses embeddings."""
         _ensure_memory_indexed()
         from .memory import memory_recall as _recall
-        results = _recall(_get_memory_conn(), concept, persona, limit)
+        results = _recall(
+            _get_memory_conn(),
+            concept,
+            persona,
+            limit,
+            include_synthesis=include_synthesis,
+        )
         if not results:
             return "No similar memories found."
         lines = []

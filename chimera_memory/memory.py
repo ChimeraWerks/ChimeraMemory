@@ -104,6 +104,21 @@ def normalized_content_fingerprint(text: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+def _frontmatter_bool(value: object, default: bool = False) -> int:
+    if value is None:
+        return 1 if default else 0
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, (int, float)):
+        return 1 if value else 0
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return 1
+    if text in {"0", "false", "no", "off"}:
+        return 0
+    return 1 if default else 0
+
+
 def normalize_for_fts(text: str) -> str:
     """Expand text for better FTS5 matching.
 
@@ -253,6 +268,7 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
 
     tags_json = json.dumps(fm.get("tags", []))
     governance = governance_from_frontmatter(fm)
+    exclude_from_default_search = _frontmatter_bool(fm.get("exclude_from_default_search"), False)
     now = time.time()
 
     if row:
@@ -268,7 +284,7 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
                 fm_provenance_status=?, fm_confidence=?, fm_lifecycle_status=?,
                 fm_review_status=?, fm_sensitivity_tier=?,
                 fm_can_use_as_instruction=?, fm_can_use_as_evidence=?,
-                fm_requires_user_confirmation=?
+                fm_requires_user_confirmation=?, fm_exclude_from_default_search=?
             WHERE id=?
         """, (
             content_hash, now,
@@ -282,6 +298,7 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
             governance["lifecycle_status"], governance["review_status"],
             governance["sensitivity_tier"], governance["can_use_as_instruction"],
             governance["can_use_as_evidence"], governance["requires_user_confirmation"],
+            exclude_from_default_search,
             file_id
         ))
     else:
@@ -295,8 +312,8 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
                 fm_provenance_status, fm_confidence, fm_lifecycle_status,
                 fm_review_status, fm_sensitivity_tier,
                 fm_can_use_as_instruction, fm_can_use_as_evidence,
-                fm_requires_user_confirmation
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                fm_requires_user_confirmation, fm_exclude_from_default_search
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             path_str, persona, relative_path, content_hash, now,
             fm.get("type"), fm.get("importance"), fm.get("created"),
@@ -309,6 +326,7 @@ def index_file(conn: sqlite3.Connection, persona: str, relative_path: str,
             governance["lifecycle_status"], governance["review_status"],
             governance["sensitivity_tier"], governance["can_use_as_instruction"],
             governance["can_use_as_evidence"], governance["requires_user_confirmation"],
+            exclude_from_default_search,
         ))
         file_id = cursor.lastrowid
 
@@ -423,7 +441,13 @@ def embed_memory_files(conn: sqlite3.Connection, file_ids: list[int]):
 
 # â”€â”€â”€ Search Tools â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
-def memory_search(conn: sqlite3.Connection, query: str, persona: Optional[str] = None, limit: int = 20) -> list[dict]:
+def memory_search(
+    conn: sqlite3.Connection,
+    query: str,
+    persona: Optional[str] = None,
+    limit: int = 20,
+    include_synthesis: bool = False,
+) -> list[dict]:
     """Full-text search across memory files."""
     from .cognitive import reinforce_on_access
 
@@ -434,8 +458,9 @@ def memory_search(conn: sqlite3.Connection, query: str, persona: Optional[str] =
             FROM memory_fts
             JOIN memory_files f ON f.id = memory_fts.rowid
             WHERE memory_fts MATCH ? AND f.persona = ?
+              AND (? OR COALESCE(f.fm_exclude_from_default_search, 0) = 0)
             ORDER BY rank LIMIT ?
-        """, (query, persona, limit)).fetchall()
+        """, (query, persona, int(bool(include_synthesis)), limit)).fetchall()
     else:
         rows = conn.execute("""
             SELECT f.id, f.path, f.persona, f.relative_path, f.fm_type, f.fm_importance,
@@ -443,8 +468,9 @@ def memory_search(conn: sqlite3.Connection, query: str, persona: Optional[str] =
             FROM memory_fts
             JOIN memory_files f ON f.id = memory_fts.rowid
             WHERE memory_fts MATCH ?
+              AND (? OR COALESCE(f.fm_exclude_from_default_search, 0) = 0)
             ORDER BY rank LIMIT ?
-        """, (query, limit)).fetchall()
+        """, (query, int(bool(include_synthesis)), limit)).fetchall()
 
     for r in rows:
         reinforce_on_access(conn, r[0])
@@ -462,7 +488,11 @@ def memory_search(conn: sqlite3.Connection, query: str, persona: Optional[str] =
         requested_limit=limit,
         results=results,
         request_payload={"query": query, "persona": persona, "limit": limit},
-        response_policy={"ranking": "fts5_rank", "returned": "all_results"},
+        response_policy={
+            "ranking": "fts5_rank",
+            "returned": "all_results",
+            "include_synthesis": bool(include_synthesis),
+        },
     )
     return results
 
@@ -473,6 +503,7 @@ def memory_query(
     max_importance: Optional[int] = None, status: Optional[str] = None,
     tag: Optional[str] = None, about: Optional[str] = None,
     sort_by: str = "importance", sort_order: str = "DESC", limit: int = 50,
+    include_synthesis: bool = False,
 ) -> list[dict]:
     """Structured query against frontmatter fields."""
     conditions, params = [], []
@@ -491,6 +522,8 @@ def memory_query(
         conditions.append("fm_tags LIKE ?"); params.append(f"%{tag}%")
     if about:
         conditions.append("fm_about LIKE ?"); params.append(f"%{about}%")
+    if not include_synthesis:
+        conditions.append("COALESCE(fm_exclude_from_default_search, 0) = 0")
 
     where = " AND ".join(conditions) if conditions else "1=1"
     valid_sorts = {
@@ -509,7 +542,7 @@ def memory_query(
                fm_provenance_status, fm_confidence, fm_lifecycle_status,
                fm_review_status, fm_sensitivity_tier,
                fm_can_use_as_instruction, fm_can_use_as_evidence,
-               fm_requires_user_confirmation
+               fm_requires_user_confirmation, fm_exclude_from_default_search
         FROM memory_files WHERE {where}
         ORDER BY {sort_col} {order} NULLS LAST LIMIT ?
     """, params + [limit]).fetchall()
@@ -525,12 +558,19 @@ def memory_query(
          "lifecycle_status": r[18], "review_status": r[19],
          "sensitivity_tier": r[20], "can_use_as_instruction": bool(r[21]),
          "can_use_as_evidence": bool(r[22]),
-         "requires_user_confirmation": bool(r[23])}
+         "requires_user_confirmation": bool(r[23]),
+         "exclude_from_default_search": bool(r[24])}
         for r in rows
     ]
 
 
-def memory_recall(conn: sqlite3.Connection, concept: str, persona: Optional[str] = None, limit: int = 10) -> list[dict]:
+def memory_recall(
+    conn: sqlite3.Connection,
+    concept: str,
+    persona: Optional[str] = None,
+    limit: int = 10,
+    include_synthesis: bool = False,
+) -> list[dict]:
     """Semantic recall: find memories most similar to a concept."""
     from .embeddings import embed_text, unpack_embedding, cosine_similarity
 
@@ -543,14 +583,16 @@ def memory_recall(conn: sqlite3.Connection, concept: str, persona: Optional[str]
             FROM memory_files f
             JOIN memory_embeddings e ON e.file_id = f.id
             WHERE f.persona = ?
-        """, (persona,)).fetchall()
+              AND (? OR COALESCE(f.fm_exclude_from_default_search, 0) = 0)
+        """, (persona, int(bool(include_synthesis)))).fetchall()
     else:
         rows = conn.execute("""
             SELECT f.id, f.path, f.persona, f.relative_path, f.fm_type,
                    f.fm_importance, f.fm_status, f.fm_about, e.embedding
             FROM memory_files f
             JOIN memory_embeddings e ON e.file_id = f.id
-        """).fetchall()
+            WHERE ? OR COALESCE(f.fm_exclude_from_default_search, 0) = 0
+        """, (int(bool(include_synthesis)),)).fetchall()
 
     scored = []
     for r in rows:
@@ -578,7 +620,11 @@ def memory_recall(conn: sqlite3.Connection, concept: str, persona: Optional[str]
         requested_limit=limit,
         results=results,
         request_payload={"concept": concept, "persona": persona, "limit": limit},
-        response_policy={"ranking": "embedding_cosine", "returned": "top_limit"},
+        response_policy={
+            "ranking": "embedding_cosine",
+            "returned": "top_limit",
+            "include_synthesis": bool(include_synthesis),
+        },
     )
     return results
 

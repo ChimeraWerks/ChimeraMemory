@@ -86,3 +86,39 @@ def test_index_file_persists_governance_frontmatter(tmp_path: Path) -> None:
     assert queried[0]["confidence"] == 0.85
     assert queried[0]["sensitivity_tier"] == "restricted"
     assert queried[0]["can_use_as_instruction"] is True
+
+
+def test_default_memory_query_excludes_generated_synthesis(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+
+    atom = tmp_path / "atom.md"
+    atom.write_text(
+        "---\ntype: procedural\nimportance: 8\n---\nAtomic source marker\n",
+        encoding="utf-8",
+    )
+    wiki = tmp_path / "wiki.md"
+    wiki.write_text(
+        "\n".join(
+            [
+                "---",
+                "type: generated_entity_wiki",
+                "importance: 8",
+                "exclude_from_default_search: true",
+                "---",
+                "Generated wiki marker",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    assert index_file(conn, "asa", "atom.md", atom)
+    assert index_file(conn, "asa", "wiki.md", wiki)
+
+    default_results = memory_query(conn, persona="asa", limit=10)
+    assert [row["relative_path"] for row in default_results] == ["atom.md"]
+
+    with_synthesis = memory_query(conn, persona="asa", limit=10, include_synthesis=True)
+    assert {row["relative_path"] for row in with_synthesis} == {"atom.md", "wiki.md"}
+    wiki_row = next(row for row in with_synthesis if row["relative_path"] == "wiki.md")
+    assert wiki_row["exclude_from_default_search"] is True
