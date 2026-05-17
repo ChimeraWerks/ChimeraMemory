@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .memory_enhancement import (
+    build_authored_memory_enrichment_request,
     build_memory_enhancement_request,
+    normalize_authored_memory_writeback,
     normalize_memory_enhancement_response,
 )
 from .memory_entities import apply_enhancement_entities
@@ -154,6 +158,74 @@ def memory_enhancement_enqueue(
     return {"ok": True, "enqueued": True, "job": _select_enhancement_job(conn, job_id)}
 
 
+def _authored_payload_fingerprint(payload: object) -> str:
+    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True, default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def memory_enhancement_enqueue_authored(
+    conn: sqlite3.Connection,
+    *,
+    persona: str,
+    memory_payload: dict,
+    provenance: dict | None = None,
+    source_ref: str = "",
+    requested_provider: str = "",
+    requested_model: str = "",
+) -> dict:
+    """Queue enrichment for a caller-authored structured memory payload."""
+    try:
+        request_payload = build_authored_memory_enrichment_request(
+            memory_payload=memory_payload,
+            persona=persona,
+            source_ref=source_ref,
+            provenance=provenance,
+        )
+    except ValueError as exc:
+        return {"ok": False, "error": str(exc), "source_ref": source_ref}
+
+    job_id = str(uuid.uuid4())
+    fingerprint = _authored_payload_fingerprint(
+        {
+            "memory_payload": request_payload.get("memory_payload") or {},
+            "provenance": request_payload.get("provenance") or {},
+        }
+    )
+    path = source_ref or str(request_payload["request_id"])
+    conn.execute(
+        """
+        INSERT INTO memory_enhancement_jobs (
+            job_id, status, persona, file_id, path, content_fingerprint,
+            requested_provider, requested_model, request_payload
+        ) VALUES (?, 'pending', ?, NULL, ?, ?, ?, ?, ?)
+        """,
+        (
+            job_id,
+            request_payload.get("persona"),
+            path,
+            fingerprint,
+            requested_provider or "",
+            requested_model or "",
+            _json_text(request_payload),
+        ),
+    )
+    record_memory_audit_event(
+        conn,
+        "memory_enhancement_authored_enqueued",
+        persona=request_payload.get("persona"),
+        target_kind="authored_memory_payload",
+        target_id=job_id,
+        payload={
+            "job_id": job_id,
+            "source_ref": source_ref,
+            "schema_version": request_payload["schema_version"],
+        },
+        commit=False,
+    )
+    conn.commit()
+    return {"ok": True, "enqueued": True, "job": _select_enhancement_job(conn, job_id)}
+
+
 def memory_enhancement_claim_next(
     conn: sqlite3.Connection,
     *,
@@ -218,9 +290,15 @@ def memory_enhancement_complete(
         return {"ok": False, "error": "enhancement job not found", "job_id": job_id}
 
     if status == "succeeded":
-        result_payload = normalize_memory_enhancement_response(
-            response_payload if isinstance(response_payload, dict) else {}
-        )
+        response_mapping = response_payload if isinstance(response_payload, dict) else {}
+        request_payload = job.get("request_payload") if isinstance(job.get("request_payload"), dict) else {}
+        if request_payload.get("task") == "enrich_authored_memory_payload":
+            result_payload = normalize_authored_memory_writeback(
+                request_payload,
+                enrichment_payload=response_mapping,
+            )
+        else:
+            result_payload = normalize_memory_enhancement_response(response_mapping)
         entity_result = apply_enhancement_entities(
             conn,
             file_id=job.get("file_id"),

@@ -14,6 +14,7 @@ from typing import Any
 
 
 ENHANCEMENT_SCHEMA_VERSION = "2026-05-14.v1"
+AUTHORED_WRITEBACK_SCHEMA_VERSION = "chimera-memory.authored-writeback.v1"
 
 UNTRUSTED_START = "----- BEGIN UNTRUSTED MEMORY CONTENT -----"
 UNTRUSTED_END = "----- END UNTRUSTED MEMORY CONTENT -----"
@@ -39,10 +40,54 @@ ALLOWED_MEMORY_TYPES = {
 
 ALLOWED_SENSITIVITY_TIERS = {"standard", "restricted", "unknown"}
 ALLOWED_ENTITY_TYPES = {"person", "project", "topic", "tool", "organization", "place", "date"}
+AUTHORED_TOPIC_ENUM = {
+    "acceptance-fixture",
+    "ar-method",
+    "autopilot-governance",
+    "classifier-failure",
+    "credential-handling",
+    "discord-discipline",
+    "frontend",
+    "grep-before-implement",
+    "ground-truth",
+    "heartbeat-skill",
+    "hermes-pattern",
+    "imports-vs-call-sites",
+    "landed-vs-pushed",
+    "live-call-diff",
+    "memory-enhancement",
+    "oauth",
+    "persona-architecture",
+    "procedural-memory",
+    "prompt-design",
+    "research-method",
+    "retry-failover",
+    "shadow-pilot",
+    "stage-graduation",
+    "task-shape",
+    "typed-extraction",
+    "ux-parity",
+    "verify-before-stating",
+    "wire-level",
+    "writeback-discipline",
+}
+ALLOWED_PROVENANCE_STATUSES = {
+    "observed",
+    "inferred",
+    "user_confirmed",
+    "imported",
+    "generated",
+    "superseded",
+    "disputed",
+}
+INSTRUCTION_GRADE_PROVENANCE = {"user_confirmed", "imported"}
 ENTITY_CONFIDENCE_THRESHOLD = 0.5
 
 MAX_FIELD_CHARS = 240
+MAX_REF_CHARS = 500
+MAX_BODY_CHARS = 4_000
 MAX_LIST_ITEMS = 25
+MAX_AUTHORED_ROWS = 50
 
 _WHITESPACE_RE = re.compile(r"\s+")
 _CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
@@ -163,6 +208,91 @@ _CANONICAL_TOPIC_ALIASES = {
     "wire level matching": "wire-level",
     "wire level parity": "wire-level",
     "wire protocol": "wire-level",
+}
+_AUTHORED_PAYLOAD_FIELDS = (
+    ("decisions", "decision"),
+    ("outputs", "output"),
+    ("lessons", "lesson"),
+    ("constraints", "constraint"),
+    ("unresolved_questions", "open_question"),
+    ("next_steps", "work_log"),
+    ("failures", "failure"),
+)
+_AUTHORED_STRUCTURED_FIELD_KEYS = {
+    "decisions": ("what", "why", "when", "by"),
+    "outputs": ("what", "why", "when", "by"),
+    "lessons": ("teaching", "source-incident", "applies-to"),
+    "constraints": ("rule", "scope", "severity"),
+    "unresolved_questions": ("question", "why", "owner"),
+    "next_steps": ("action", "owner", "due-when"),
+    "failures": ("what-failed", "why", "recovery"),
+    "artifacts": ("kind", "ref", "note"),
+    "action_items": ("action",),
+}
+_AUTHORED_PRIMARY_ITEM_KEYS = {
+    "decisions": "what",
+    "outputs": "what",
+    "lessons": "teaching",
+    "constraints": "rule",
+    "unresolved_questions": "question",
+    "next_steps": "action",
+    "failures": "what-failed",
+    "artifacts": "ref",
+    "action_items": "action",
+}
+_AUTHORED_TOP_LEVEL_ALIASES = {
+    "memory_id": "memory_id",
+    "memory_type": "memory_type",
+    "importance": "importance",
+    "created": "created",
+    "last_accessed": "last_accessed",
+    "status": "status",
+    "author": "author",
+    "summary": "summary",
+    "about": "about",
+    "body": "body",
+    "sensitivity_tier": "sensitivity_tier",
+    "decisions": "decisions",
+    "outputs": "outputs",
+    "lessons": "lessons",
+    "constraints": "constraints",
+    "unresolved_questions": "unresolved_questions",
+    "next_steps": "next_steps",
+    "failures": "failures",
+    "artifacts": "artifacts",
+    "action_items": "action_items",
+    "entities": "entities",
+}
+_AUTHORED_NESTED_KEY_ALIASES = {
+    "source_incident": "source-incident",
+    "applies_to": "applies-to",
+    "due_when": "due-when",
+    "what_failed": "what-failed",
+    "uri": "ref",
+    "description": "note",
+}
+_MEMORY_TYPE_ALIASES = {
+    "episode": "episodic",
+    "episodes": "episodic",
+}
+_SENSITIVITY_TIER_ALIASES = {
+    "confidential": "restricted",
+    "private": "restricted",
+}
+_AUTHORED_ENTITY_FIELDS = {
+    "topics": "topics",
+    "topic": "topics",
+    "people": "people",
+    "persons": "people",
+    "projects": "projects",
+    "repos": "projects",
+    "repositories": "projects",
+    "tools": "tools",
+    "organizations": "organizations",
+    "orgs": "organizations",
+    "places": "places",
+    "locations": "places",
+    "dates": "dates",
 }
 _SECRET_LITERAL_PREFIXES = tuple(
     "".join(parts)
@@ -303,6 +433,35 @@ def _canonical_entity_name(value: Any, *, entity_type: str = "") -> str:
     if key in _CANONICAL_ENTITY_ALIASES:
         return _CANONICAL_ENTITY_ALIASES[key]
     return _display_from_key(key)
+
+
+def _canonical_authored_topic(value: Any) -> str:
+    topic = _canonical_entity_name(value, entity_type="topic")
+    return topic if topic in AUTHORED_TOPIC_ENUM else ""
+
+
+def _closed_authored_topic_entities(entities: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    closed: list[dict[str, Any]] = []
+    for entity in entities:
+        entity_type = str(entity.get("type") or "")
+        name = _clean_text(entity.get("name"))
+        if entity_type == "topic":
+            name = _canonical_authored_topic(name)
+            if not name:
+                continue
+        if entity_type not in ALLOWED_ENTITY_TYPES or not name:
+            continue
+        copied = dict(entity)
+        copied["name"] = name
+        copied["type"] = entity_type
+        closed.append(copied)
+    return closed
+
+
+def _clean_sensitivity_tier(value: Any, *, default: str = "standard") -> str:
+    raw = _clean_text(value)
+    tier = _SENSITIVITY_TIER_ALIASES.get(_lookup_key(raw), raw)
+    return tier if tier in ALLOWED_SENSITIVITY_TIERS else default
 
 
 def _normalize_typed_entities(payload: Mapping[str, Any], *, default_confidence: float) -> list[dict[str, Any]]:
@@ -480,6 +639,393 @@ def build_memory_enhancement_request(
     }
 
 
+def _is_sequence(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
+
+
+def _lookup_key(value: Any) -> str:
+    key = _CONTROL_RE.sub("", str(value or "")).strip().lower()
+    key = re.sub(r"[\s\-]+", "_", key)
+    return re.sub(r"[^a-z0-9_]+", "", key)
+
+
+def _clean_mapping_list(value: Any, *, field: str = "") -> list[dict[str, Any]]:
+    if not _is_sequence(value):
+        return []
+    cleaned: list[dict[str, Any]] = []
+    for item in value:
+        mapped = _clean_authored_item(item, field=field)
+        if mapped:
+            cleaned.append(mapped)
+        if len(cleaned) >= MAX_AUTHORED_ROWS:
+            break
+    return cleaned
+
+
+def _clean_authored_item(value: Any, *, field: str) -> dict[str, Any]:
+    allowed_keys = _AUTHORED_STRUCTURED_FIELD_KEYS.get(field, ())
+    if isinstance(value, Mapping):
+        normalized: dict[str, Any] = {}
+        for raw_key, raw_value in value.items():
+            key = _lookup_key(raw_key)
+            key = _AUTHORED_NESTED_KEY_ALIASES.get(key, key.replace("_", "-"))
+            if key not in allowed_keys:
+                continue
+            max_chars = MAX_REF_CHARS if key == "ref" else MAX_FIELD_CHARS
+            text = _clean_text(raw_value, max_chars=max_chars)
+            if text:
+                normalized[key] = text
+        return normalized
+
+    primary_key = _AUTHORED_PRIMARY_ITEM_KEYS.get(field)
+    text = _clean_text(value, max_chars=MAX_REF_CHARS if field == "artifacts" else MAX_FIELD_CHARS)
+    if not primary_key or not text:
+        return {}
+    return {primary_key: text}
+
+
+def _clean_authored_items(value: Any, *, field: str, max_items: int = MAX_AUTHORED_ROWS) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    raw_items: Sequence[Any]
+    if isinstance(value, Mapping) or not _is_sequence(value):
+        raw_items = [value]
+    else:
+        raw_items = value
+
+    cleaned: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        mapped = _clean_authored_item(item, field=field)
+        if not mapped:
+            continue
+        key = "|".join(f"{name}:{mapped.get(name, '')}" for name in _AUTHORED_STRUCTURED_FIELD_KEYS.get(field, ()))
+        key = _label_key(key)
+        if key in seen:
+            continue
+        cleaned.append(mapped)
+        seen.add(key)
+        if len(cleaned) >= max_items:
+            break
+    return cleaned
+
+
+def _clean_authored_entities_mapping(value: Any) -> dict[str, list[str]]:
+    if not isinstance(value, Mapping):
+        return {}
+    payload: dict[str, list[str]] = {}
+    for raw_field, raw_value in value.items():
+        field = _AUTHORED_ENTITY_FIELDS.get(_label_key(raw_field))
+        if not field:
+            continue
+        cleaned = _clean_list(raw_value)
+        if field == "topics":
+            cleaned = [topic for topic in (_canonical_authored_topic(item) for item in cleaned) if topic]
+        if cleaned:
+            payload[field] = cleaned
+    return payload
+
+
+def _authored_memory_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    raw = payload.get("memory_payload") if isinstance(payload.get("memory_payload"), Mapping) else payload
+    if not isinstance(raw, Mapping):
+        return {}
+
+    cleaned: dict[str, Any] = {}
+    for raw_key, value in raw.items():
+        field = _AUTHORED_TOP_LEVEL_ALIASES.get(_lookup_key(raw_key))
+        if not field:
+            continue
+        if field in _AUTHORED_STRUCTURED_FIELD_KEYS or field == "action_items":
+            cleaned[field] = _clean_authored_items(value, field=field)
+        elif field == "entities":
+            entities = _clean_authored_entities_mapping(value)
+            if entities:
+                cleaned[field] = entities
+        elif field == "importance":
+            try:
+                importance = int(value)
+            except (TypeError, ValueError):
+                continue
+            cleaned[field] = max(1, min(10, importance))
+        elif field == "body":
+            text = _clean_text(value, max_chars=MAX_BODY_CHARS)
+            if text:
+                cleaned[field] = text
+        else:
+            text = _clean_text(value)
+            if text:
+                cleaned[field] = text
+    return cleaned
+
+
+def _authored_memory_rows(memory_payload: Mapping[str, Any]) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for field, memory_type in _AUTHORED_PAYLOAD_FIELDS:
+        for item in _clean_authored_items(memory_payload.get(field), field=field, max_items=MAX_AUTHORED_ROWS):
+            content = _authored_item_content(field, item)
+            if not content:
+                continue
+            rows.append({"field": field, "memory_type": memory_type, "content": content})
+            if len(rows) >= MAX_AUTHORED_ROWS:
+                return rows
+
+    for artifact in _clean_mapping_list(memory_payload.get("artifacts"), field="artifacts"):
+        content = _authored_item_content("artifacts", artifact)
+        if content:
+            rows.append({"field": "artifacts", "memory_type": "artifact_reference", "content": content})
+            if len(rows) >= MAX_AUTHORED_ROWS:
+                return rows
+    return rows
+
+
+def _authored_item_content(field: str, item: Mapping[str, Any]) -> str:
+    parts: list[str] = []
+    for key in _AUTHORED_STRUCTURED_FIELD_KEYS.get(field, ()):
+        value = _clean_text(item.get(key), max_chars=MAX_REF_CHARS if key == "ref" else MAX_FIELD_CHARS)
+        if value:
+            parts.append(f"{key}: {value}")
+    if not parts:
+        return ""
+    label = field.replace("_", " ").rstrip("s")
+    return _clean_text(f"{label}: {'; '.join(parts)}", max_chars=MAX_REF_CHARS)
+
+
+def _authored_enrichment_text(memory_payload: Mapping[str, Any], rows: Sequence[Mapping[str, str]]) -> str:
+    parts = [_clean_text(row.get("content"), max_chars=MAX_REF_CHARS) for row in rows]
+    body = _clean_text(memory_payload.get("body"), max_chars=MAX_BODY_CHARS)
+    if body:
+        parts.append(f"body: {body}")
+    return "\n".join(part for part in parts if part)
+
+
+def _memory_type_from_rows(rows: Sequence[Mapping[str, str]], explicit: Any = None) -> str:
+    raw_type = _MEMORY_TYPE_ALIASES.get(_lookup_key(explicit), _clean_text(explicit))
+    if raw_type in ALLOWED_MEMORY_TYPES:
+        return raw_type
+    types = [str(row.get("memory_type") or "") for row in rows if row.get("memory_type")]
+    unique = list(dict.fromkeys(types))
+    if len(unique) == 1 and unique[0] in ALLOWED_MEMORY_TYPES:
+        return unique[0]
+    return "work_log" if rows else ""
+
+
+def _authored_summary(payload: Mapping[str, Any], rows: Sequence[Mapping[str, str]]) -> str:
+    memory_payload = _authored_memory_payload(payload)
+    for source in (
+        payload.get("summary"),
+        payload.get("about"),
+        memory_payload.get("summary"),
+        memory_payload.get("about"),
+        memory_payload.get("body"),
+    ):
+        summary = _clean_text(source)
+        if summary:
+            return summary
+    for row in rows:
+        summary = _clean_text(row.get("content"))
+        if summary:
+            return summary
+    return ""
+
+
+def _authored_action_items(memory_payload: Mapping[str, Any]) -> list[str]:
+    raw_actions = []
+    for item in _clean_authored_items(memory_payload.get("action_items"), field="action_items"):
+        action = _clean_text(item.get("action"))
+        if action:
+            raw_actions.append(action)
+    for item in _clean_authored_items(memory_payload.get("next_steps"), field="next_steps"):
+        action = _clean_text(item.get("action"))
+        if action:
+            raw_actions.append(action)
+    return _clean_action_items(raw_actions)
+
+
+def _authored_entities_payload(memory_payload: Mapping[str, Any]) -> dict[str, Any]:
+    raw_entities = memory_payload.get("entities")
+    return _clean_authored_entities_mapping(raw_entities)
+
+
+def _merge_entities(
+    primary: Sequence[Mapping[str, Any]],
+    secondary: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for entity in (*primary, *secondary):
+        entity_type = str(entity.get("type") or "")
+        name = _clean_text(entity.get("name"))
+        if entity_type not in ALLOWED_ENTITY_TYPES or not name:
+            continue
+        key = (entity_type, _label_key(name))
+        if key in seen:
+            continue
+        confidence = _optional_confidence(entity.get("confidence"))
+        if confidence is None:
+            confidence = 1.0
+        if confidence < ENTITY_CONFIDENCE_THRESHOLD:
+            continue
+        merged.append(
+            {
+                "name": name,
+                "type": entity_type,
+                "confidence": confidence,
+                "source_field": _clean_text(entity.get("source_field"), max_chars=120) or "entities",
+            }
+        )
+        seen.add(key)
+        if len(merged) >= MAX_LIST_ITEMS:
+            break
+    return merged
+
+
+def _provenance_policy(payload: Mapping[str, Any]) -> dict[str, Any]:
+    provenance = payload.get("provenance") if isinstance(payload.get("provenance"), Mapping) else {}
+    status = _clean_text(
+        payload.get("provenance_status")
+        or provenance.get("default_status")
+        or provenance.get("status")
+        or "generated"
+    )
+    if status not in ALLOWED_PROVENANCE_STATUSES:
+        status = "generated"
+    confidence = _optional_confidence(payload.get("confidence"))
+    if confidence is None:
+        confidence = _optional_confidence(provenance.get("confidence"))
+    requires_review = provenance.get("requires_review", payload.get("requires_user_confirmation"))
+    requires_user_confirmation = True
+    if isinstance(requires_review, bool):
+        requires_user_confirmation = requires_review
+    elif requires_review is not None:
+        requires_user_confirmation = str(requires_review).strip().lower() not in {"0", "false", "no", "off"}
+    else:
+        requires_user_confirmation = status not in INSTRUCTION_GRADE_PROVENANCE
+    can_use_as_instruction = status in INSTRUCTION_GRADE_PROVENANCE and not requires_user_confirmation
+    return {
+        "provenance_status": status,
+        "confidence": confidence,
+        "review_status": "confirmed" if can_use_as_instruction else "pending",
+        "can_use_as_instruction": can_use_as_instruction,
+        "can_use_as_evidence": True,
+        "requires_user_confirmation": requires_user_confirmation,
+    }
+
+
+def build_authored_memory_enrichment_request(
+    *,
+    memory_payload: Mapping[str, Any],
+    persona: str,
+    source_ref: str = "",
+    provenance: Mapping[str, Any] | None = None,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    """Build an enrichment-only request for caller-authored memory payloads."""
+    safe_payload = _authored_memory_payload({"memory_payload": memory_payload})
+    rows = _authored_memory_rows(safe_payload)
+    if not rows:
+        raise ValueError("authored memory payload requires at least one structured field")
+    enrichment_text = _authored_enrichment_text(safe_payload, rows)
+    memory_type = _memory_type_from_rows(rows, safe_payload.get("memory_type"))
+    return {
+        "schema_version": AUTHORED_WRITEBACK_SCHEMA_VERSION,
+        "request_id": request_id or str(uuid.uuid4()),
+        "task": "enrich_authored_memory_payload",
+        "persona": _clean_text(persona, max_chars=120),
+        "source_ref": _clean_text(source_ref, max_chars=500),
+        "memory_payload": safe_payload,
+        "provenance": _clean_mapping(provenance),
+        "contract": {
+            "memory_type": memory_type,
+            "summary": _authored_summary({"memory_payload": safe_payload}, rows),
+            "action_items": _authored_action_items(safe_payload),
+            "structured_field_count": len(rows),
+        },
+        "policy": {
+            "content_is_untrusted": True,
+            "json_only": True,
+            "authoritative_fields": ["memory_payload", "summary", "action_items", "contract", "provenance"],
+            "llm_may_only_enrich": ["entities", "topics", "dates", "confidence", "sensitivity_tier"],
+            "generated_enrichment_is_evidence_only": True,
+            "closed_topic_enum": True,
+        },
+        "expected_fields": ["entities", "topics", "dates", "confidence", "sensitivity_tier"],
+        "topic_enum": sorted(AUTHORED_TOPIC_ENUM),
+        "wrapped_content": wrap_untrusted_memory_content(enrichment_text),
+    }
+
+
+def normalize_authored_memory_writeback(
+    payload: Mapping[str, Any],
+    *,
+    enrichment_payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Normalize caller-authored writeback plus optional LLM enrichment.
+
+    The authored payload owns memory type, summary, action items, and use policy.
+    The enrichment payload can only contribute typed entities, topics, dates, and
+    sensitivity escalation.
+    """
+    memory_payload = _authored_memory_payload(payload)
+    rows = _authored_memory_rows(memory_payload)
+    policy = _provenance_policy(payload)
+    explicit_contract = payload.get("contract") if isinstance(payload.get("contract"), Mapping) else {}
+    memory_type = _memory_type_from_rows(
+        rows,
+        explicit_contract.get("memory_type")
+        or memory_payload.get("memory_type")
+        or payload.get("memory_type"),
+    )
+    authored_entities = _closed_authored_topic_entities(_normalize_typed_entities(
+        _authored_entities_payload(memory_payload),
+        default_confidence=1.0,
+    ))
+    for entity in authored_entities:
+        entity["source_field"] = f"memory_payload.entities.{entity['source_field']}"
+
+    enrichment_normalized = normalize_memory_enhancement_response(enrichment_payload or {})
+    enrichment_entities = _closed_authored_topic_entities(enrichment_normalized["entities"])
+    for entity in enrichment_entities:
+        entity["source_field"] = f"enrichment.{entity.get('source_field') or 'entities'}"
+
+    entities = _merge_entities(authored_entities, enrichment_entities)
+    projected = _project_entities(entities)
+    raw_sensitivity = (
+        payload.get("sensitivity_tier")
+        or explicit_contract.get("sensitivity_tier")
+        or memory_payload.get("sensitivity_tier")
+        or enrichment_normalized.get("sensitivity_tier")
+        or "standard"
+    )
+    sensitivity_tier = _clean_sensitivity_tier(raw_sensitivity)
+    if _contains_restricted_sensitivity_signal(payload, enrichment_payload):
+        sensitivity_tier = "restricted"
+
+    return {
+        "schema_version": AUTHORED_WRITEBACK_SCHEMA_VERSION,
+        "memory_type": memory_type,
+        "summary": _authored_summary(payload, rows),
+        "authored_rows": rows,
+        "entities": entities,
+        "topics": projected["topics"],
+        "people": projected["people"],
+        "projects": projected["projects"],
+        "tools": projected["tools"],
+        "organizations": projected["organizations"],
+        "places": projected["places"],
+        "action_items": _authored_action_items(memory_payload),
+        "dates": projected["dates"],
+        "confidence": policy["confidence"],
+        "sensitivity_tier": sensitivity_tier,
+        "provenance_status": policy["provenance_status"],
+        "review_status": policy["review_status"],
+        "can_use_as_instruction": policy["can_use_as_instruction"],
+        "can_use_as_evidence": policy["can_use_as_evidence"],
+        "requires_user_confirmation": policy["requires_user_confirmation"],
+        "enrichment_status": "complete" if enrichment_payload else "not_requested",
+    }
+
+
 def normalize_memory_enhancement_response(
     payload: Mapping[str, Any],
     *,
@@ -488,10 +1034,7 @@ def normalize_memory_enhancement_response(
     """Normalize sidecar output into governance-safe metadata."""
     raw_type = _clean_text(payload.get("memory_type") or payload.get("type"))
     memory_type = raw_type if raw_type in ALLOWED_MEMORY_TYPES else ""
-    raw_sensitivity = _clean_text(payload.get("sensitivity_tier")) or "standard"
-    sensitivity_tier = (
-        raw_sensitivity if raw_sensitivity in ALLOWED_SENSITIVITY_TIERS else "standard"
-    )
+    sensitivity_tier = _clean_sensitivity_tier(payload.get("sensitivity_tier") or "standard")
     if _contains_restricted_sensitivity_signal(payload, sensitivity_context):
         sensitivity_tier = "restricted"
     confidence = _optional_confidence(payload.get("confidence"))

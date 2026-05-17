@@ -1,8 +1,11 @@
 from chimera_memory.memory_enhancement import (
+    AUTHORED_WRITEBACK_SCHEMA_VERSION,
     ENHANCEMENT_SCHEMA_VERSION,
     UNTRUSTED_END,
+    build_authored_memory_enrichment_request,
     build_memory_enhancement_request,
     enhancement_metadata_to_frontmatter,
+    normalize_authored_memory_writeback,
     normalize_memory_enhancement_response,
     wrap_untrusted_memory_content,
 )
@@ -133,6 +136,117 @@ def test_normalize_memory_enhancement_response_forces_restricted_from_source_con
     )
 
     assert normalized["sensitivity_tier"] == "restricted"
+
+
+def test_build_authored_memory_enrichment_request_keeps_llm_scope_narrow() -> None:
+    request = build_authored_memory_enrichment_request(
+        memory_payload={
+            "memory_type": "episode",
+            "lessons": [
+                {
+                    "teaching": "Verify before stating.",
+                    "source-incident": "Day 61 OB comparison",
+                    "applies-to": "architecture claims",
+                }
+            ],
+            "next_steps": [{"action": "Check each wire-level axis independently", "owner": "asa"}],
+            "body": "The caller writes memory; the LLM only enriches metadata.",
+            "entities": {
+                "topics": ["memory enhancement", "not-in-enum"],
+                "projects": ["ChimeraMemory"],
+            },
+        },
+        persona="developer/asa",
+        source_ref="day61/structured-writeback",
+        request_id="authored-1",
+    )
+
+    assert request["schema_version"] == AUTHORED_WRITEBACK_SCHEMA_VERSION
+    assert request["task"] == "enrich_authored_memory_payload"
+    assert request["contract"]["memory_type"] == "episodic"
+    assert request["contract"]["action_items"] == ["Check each wire-level axis independently"]
+    assert request["expected_fields"] == ["entities", "topics", "dates", "confidence", "sensitivity_tier"]
+    assert "summary" in request["policy"]["authoritative_fields"]
+    assert "action_items" in request["policy"]["authoritative_fields"]
+    assert request["policy"]["llm_may_only_enrich"] == [
+        "entities",
+        "topics",
+        "dates",
+        "confidence",
+        "sensitivity_tier",
+    ]
+    assert request["memory_payload"]["entities"]["topics"] == ["memory-enhancement"]
+    assert "body: The caller writes memory" in request["wrapped_content"]
+    assert "memory-enhancement" in request["topic_enum"]
+
+
+def test_build_authored_memory_enrichment_request_requires_structured_field() -> None:
+    try:
+        build_authored_memory_enrichment_request(
+            memory_payload={"body": "Prose alone is not enough."},
+            persona="developer/asa",
+        )
+    except ValueError as exc:
+        assert "structured field" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_normalize_authored_memory_writeback_ignores_model_authoritative_fields() -> None:
+    request = build_authored_memory_enrichment_request(
+        memory_payload={
+            "memory_type": "procedural",
+            "summary": "OB pattern adapted for CM.",
+            "lessons": [{"teaching": "Caller-authored memory is authoritative."}],
+            "next_steps": [{"action": "Preserve structured writeback discipline"}],
+            "entities": {"topics": ["writeback discipline"], "projects": ["ChimeraMemory"]},
+        },
+        persona="developer/asa",
+        provenance={"status": "generated"},
+        request_id="authored-2",
+    )
+
+    normalized = normalize_authored_memory_writeback(
+        request,
+        enrichment_payload={
+            "memory_type": "semantic",
+            "summary": "Model should not win.",
+            "action_items": ["Model-derived action should not win."],
+            "topics": ["memory enhancement", "free floating paraphrase"],
+            "people": ["Charles"],
+            "confidence": 0.82,
+            "sensitivity_tier": "confidential",
+        },
+    )
+
+    assert normalized["memory_type"] == "procedural"
+    assert normalized["summary"] == "OB pattern adapted for CM."
+    assert normalized["action_items"] == ["Preserve structured writeback discipline"]
+    assert normalized["topics"] == ["writeback-discipline", "memory-enhancement"]
+    assert normalized["people"] == ["Charles"]
+    assert normalized["projects"] == ["ChimeraMemory"]
+    assert normalized["sensitivity_tier"] == "restricted"
+    assert normalized["review_status"] == "pending"
+    assert normalized["can_use_as_instruction"] is False
+
+
+def test_normalize_authored_memory_writeback_allows_confirmed_instruction_grade() -> None:
+    request = build_authored_memory_enrichment_request(
+        memory_payload={
+            "memory_type": "procedural",
+            "lessons": [{"teaching": "Use structured writeback for new memories."}],
+        },
+        persona="developer/asa",
+        provenance={"status": "user_confirmed", "requires_review": False, "confidence": 0.91},
+        request_id="authored-3",
+    )
+
+    normalized = normalize_authored_memory_writeback(request, enrichment_payload={"topics": ["writeback discipline"]})
+
+    assert normalized["provenance_status"] == "user_confirmed"
+    assert normalized["review_status"] == "confirmed"
+    assert normalized["can_use_as_instruction"] is True
+    assert normalized["confidence"] == 0.91
 
 
 def test_enhancement_metadata_to_frontmatter_outputs_cm_yaml_fields() -> None:

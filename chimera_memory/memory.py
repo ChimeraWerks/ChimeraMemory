@@ -21,6 +21,7 @@ from .memory_enhancement_queue import (
     memory_enhancement_claim_next,
     memory_enhancement_complete,
     memory_enhancement_enqueue,
+    memory_enhancement_enqueue_authored,
 )
 from .memory_enhancement_shadow import memory_enhancement_shadow_enqueue
 from .memory_entities import (

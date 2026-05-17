@@ -70,6 +70,18 @@ def main():
     sub_enhance_enqueue.add_argument("--model", default="", help="Requested model hint")
     sub_enhance_enqueue.add_argument("--force", action="store_true", help="Supersede an existing pending/running job")
     sub_enhance_enqueue.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
+    sub_enhance_authored_enqueue = enhance_subparsers.add_parser(
+        "authored-enqueue",
+        help="Queue a structured agent-authored memory payload for narrow enrichment",
+    )
+    sub_enhance_authored_enqueue.add_argument("--db", help="Path to transcript.db")
+    sub_enhance_authored_enqueue.add_argument("--persona", required=True, help="Persona writing the payload")
+    sub_enhance_authored_enqueue.add_argument("--payload", required=True, help="JSON file containing memory_payload")
+    sub_enhance_authored_enqueue.add_argument("--provenance", default="", help="Optional JSON provenance file")
+    sub_enhance_authored_enqueue.add_argument("--source-ref", default="", help="Optional source reference")
+    sub_enhance_authored_enqueue.add_argument("--provider", default="", help="Requested provider hint")
+    sub_enhance_authored_enqueue.add_argument("--model", default="", help="Requested model hint")
+    sub_enhance_authored_enqueue.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     sub_enhance_dry_run = enhance_subparsers.add_parser("dry-run", help="Process queued jobs with deterministic local metadata")
     sub_enhance_dry_run.add_argument("--db", help="Path to transcript.db")
     sub_enhance_dry_run.add_argument("--persona", help="Only process jobs for this persona")
@@ -312,6 +324,68 @@ def _run_enhance(args):
             json_output=args.json,
             lines=[
                 f"{action} enhancement job: {job.get('job_id', '')}",
+                f"Status: {job.get('status', '')}",
+                f"Persona: {job.get('persona', '')}",
+            ],
+        )
+        return
+
+    if args.enhance_command == "authored-enqueue":
+        from pathlib import Path
+
+        from .memory import memory_enhancement_enqueue_authored
+
+        try:
+            raw_payload = json.loads(Path(args.payload).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"Authored enqueue failed: invalid payload file ({exc.__class__.__name__})", file=sys.stderr)
+            sys.exit(2)
+        if not isinstance(raw_payload, dict):
+            print("Authored enqueue failed: payload must be a JSON object", file=sys.stderr)
+            sys.exit(2)
+
+        memory_payload = raw_payload.get("memory_payload") if isinstance(raw_payload.get("memory_payload"), dict) else raw_payload
+        provenance = raw_payload.get("provenance") if isinstance(raw_payload.get("provenance"), dict) else {}
+        if args.provenance:
+            try:
+                raw_provenance = json.loads(Path(args.provenance).read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"Authored enqueue failed: invalid provenance file ({exc.__class__.__name__})", file=sys.stderr)
+                sys.exit(2)
+            if not isinstance(raw_provenance, dict):
+                print("Authored enqueue failed: provenance must be a JSON object", file=sys.stderr)
+                sys.exit(2)
+            provenance = raw_provenance
+
+        source_ref = args.source_ref or str(raw_payload.get("source_ref") or "")
+        conn = _open_memory_db(args.db)
+        try:
+            result = memory_enhancement_enqueue_authored(
+                conn,
+                persona=args.persona,
+                memory_payload=memory_payload,
+                provenance=provenance,
+                source_ref=source_ref,
+                requested_provider=args.provider,
+                requested_model=args.model,
+            )
+        finally:
+            conn.close()
+
+        if not result.get("ok"):
+            _emit_json_or_lines(
+                result,
+                json_output=args.json,
+                lines=[f"Authored enqueue failed: {result.get('error', 'unknown error')}"],
+            )
+            sys.exit(2)
+
+        job = result.get("job") or {}
+        _emit_json_or_lines(
+            result,
+            json_output=args.json,
+            lines=[
+                f"Enqueued authored enhancement job: {job.get('job_id', '')}",
                 f"Status: {job.get('status', '')}",
                 f"Persona: {job.get('persona', '')}",
             ],

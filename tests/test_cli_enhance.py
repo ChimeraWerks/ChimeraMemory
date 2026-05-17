@@ -93,6 +93,56 @@ def test_cli_enhance_enqueue_and_dry_run_json(tmp_path: Path, monkeypatch, capsy
     assert processed["processed"][0]["result_payload"]["can_use_as_instruction"] is False
 
 
+def test_cli_enhance_authored_enqueue_json(tmp_path: Path, monkeypatch, capsys) -> None:
+    db_path = tmp_path / "transcript.db"
+    conn = sqlite3.connect(db_path)
+    try:
+        init_memory_tables(conn)
+    finally:
+        conn.close()
+    payload_path = tmp_path / "authored.json"
+    payload_path.write_text(
+        json.dumps(
+            {
+                "memory_payload": {
+                    "memory_type": "procedural",
+                    "lessons": [{"teaching": "Structured writeback keeps LLM enrichment narrow."}],
+                    "next_steps": [{"action": "Keep LLM enrichment narrow"}],
+                },
+                "provenance": {"status": "generated"},
+                "source_ref": "day61/structured-writeback",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "chimera-memory",
+            "enhance",
+            "authored-enqueue",
+            "--db",
+            str(db_path),
+            "--persona",
+            "asa",
+            "--payload",
+            str(payload_path),
+            "--json",
+        ],
+    )
+
+    main()
+
+    enqueued = json.loads(capsys.readouterr().out)
+    assert enqueued["ok"] is True
+    assert enqueued["job"]["status"] == "pending"
+    assert enqueued["job"]["path"] == "day61/structured-writeback"
+    assert enqueued["job"]["request_payload"]["task"] == "enrich_authored_memory_payload"
+    assert enqueued["job"]["request_payload"]["contract"]["action_items"] == ["Keep LLM enrichment narrow"]
+
+
 def test_cli_enhance_enqueue_missing_file_exits_cleanly(tmp_path: Path, monkeypatch, capsys) -> None:
     db_path = tmp_path / "transcript.db"
     conn = sqlite3.connect(db_path)
