@@ -1695,6 +1695,39 @@ def create_server():
         return "\n".join(lines)
 
     @server.tool()
+    def memory_legacy_migration_plan(
+        personas_dir: str = "",
+        persona: str = "",
+        limit: int = 50,
+    ) -> str:
+        """Plan legacy prose-memory migration without writing files."""
+        from .memory import memory_legacy_migration_plan as _plan
+
+        root = personas_dir.strip()
+        if not root:
+            resolved = resolve_memory_whereami()
+            root = str(resolved.get("personas_dir") or "")
+        if not root:
+            return "No personas_dir configured."
+        result = _plan(root, persona=persona or None, limit=limit)
+        if result["total_files"] == 0:
+            return "No legacy memory files found."
+        lines = [
+            f"Legacy migration plan: {result['total_files']} file(s), returned {result['returned_files']}.",
+            f"By mode: {result['counts_by_mode']}",
+            f"By risk: {result['counts_by_risk']}",
+        ]
+        for item in result["files"][: max(0, min(limit, 50))]:
+            reasons = ",".join(item.get("reasons") or [])
+            lines.append(
+                f"- {item['persona']}:{item['relative_path']} "
+                f"{item['migration_mode']} risk={item['risk']} reason={reasons}"
+            )
+        if result.get("truncated"):
+            lines.append("Result truncated. Increase limit for more rows.")
+        return "\n".join(lines)
+
+    @server.tool()
     def memory_entity_wiki_generate(
         entity_id: int = 0,
         entity_name: str = "",
