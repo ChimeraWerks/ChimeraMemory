@@ -1,6 +1,9 @@
 from pathlib import Path
 
-from chimera_memory.memory_legacy_migration import memory_legacy_migration_plan
+from chimera_memory.memory_legacy_migration import (
+    memory_legacy_frontmatter_retrofit,
+    memory_legacy_migration_plan,
+)
 
 
 def _write(path: Path, text: str) -> None:
@@ -65,3 +68,88 @@ def test_legacy_migration_plan_scans_all_personas_and_truncates(tmp_path: Path) 
     assert result["returned_files"] == 1
     assert result["truncated"] is True
     assert result["counts_by_persona"] == {"asa": 1, "sarah": 1}
+
+
+def test_legacy_frontmatter_retrofit_previews_without_writing_and_preserves_body(tmp_path: Path) -> None:
+    personas_dir = tmp_path / "personas"
+    target = personas_dir / "researcher" / "sarah" / "memory" / "procedural" / "rule.md"
+    body = "# Rule\n\nOriginal prose stays exactly.\n"
+    original = "---\ntype: procedural\nimportance: 9\ntags:\n- old\n---" + body
+    _write(target, original)
+
+    result = memory_legacy_frontmatter_retrofit(
+        personas_dir,
+        persona="sarah",
+        relative_path="memory/procedural/rule.md",
+        memory_payload={
+            "lessons": [{"teaching": "Preserve prose while adding structure."}],
+            "constraints": [{"rule": "Do not rewrite the body."}],
+        },
+        migrated_at="2026-05-17T00:00:00Z",
+    )
+
+    assert result["ok"] is True
+    assert result["written"] is False
+    assert result["body_preserved"] is True
+    assert result["review_status"] == "pending"
+    assert target.read_text(encoding="utf-8") == original
+    frontmatter = result["preview_frontmatter"]
+    assert frontmatter["type"] == "procedural"
+    assert frontmatter["importance"] == 9
+    assert frontmatter["tags"] == ["old"]
+    assert frontmatter["memory_payload"]["lessons"][0]["teaching"] == (
+        "Preserve prose while adding structure."
+    )
+    assert frontmatter["legacy_migration"]["mode"] == "body_preserving_frontmatter_retrofit"
+
+
+def test_legacy_frontmatter_retrofit_writes_and_keeps_body_hash(tmp_path: Path) -> None:
+    personas_dir = tmp_path / "personas"
+    target = personas_dir / "researcher" / "sarah" / "memory" / "episodes" / "moment.md"
+    original_body = "Line one.\n\nLine two with spacing.\n"
+    _write(target, "---\ntype: episode\nimportance: 4\n---" + original_body)
+
+    result = memory_legacy_frontmatter_retrofit(
+        personas_dir,
+        persona="sarah",
+        relative_path="memory/episodes/moment.md",
+        memory_payload={"decisions": [{"decision": "Keep the body canonical."}]},
+        write=True,
+        actor="test",
+        migrated_at="2026-05-17T00:00:00Z",
+    )
+
+    assert result["ok"] is True
+    assert result["written"] is True
+    updated = target.read_text(encoding="utf-8")
+    assert updated.endswith(original_body)
+    assert "memory_payload:" in updated
+    assert "review_status: pending" in updated
+    assert "migrated_by: test" in updated
+
+
+def test_legacy_frontmatter_retrofit_rejects_escape_and_existing_payload(tmp_path: Path) -> None:
+    personas_dir = tmp_path / "personas"
+    target = personas_dir / "researcher" / "sarah" / "memory" / "procedural" / "structured.md"
+    _write(
+        target,
+        "---\ntype: procedural\nmemory_payload:\n  lessons:\n  - old\n---\nBody.\n",
+    )
+
+    escaped = memory_legacy_frontmatter_retrofit(
+        personas_dir,
+        persona="sarah",
+        relative_path="../outside.md",
+        memory_payload={"lessons": [{"teaching": "Nope."}]},
+    )
+    assert escaped["ok"] is False
+    assert "escapes" in escaped["error"]
+
+    existing = memory_legacy_frontmatter_retrofit(
+        personas_dir,
+        persona="sarah",
+        relative_path="memory/procedural/structured.md",
+        memory_payload={"lessons": [{"teaching": "New."}]},
+    )
+    assert existing["ok"] is False
+    assert existing["error"] == "memory_payload already exists"

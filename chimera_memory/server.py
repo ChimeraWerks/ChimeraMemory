@@ -1736,6 +1736,60 @@ def create_server():
         return "\n".join(lines)
 
     @server.tool()
+    def memory_legacy_frontmatter_retrofit(
+        payload_yaml: str,
+        persona: str,
+        relative_path: str,
+        personas_dir: str = "",
+        write: bool = False,
+        overwrite_payload: bool = False,
+    ) -> str:
+        """Preview or write a body-preserving legacy memory frontmatter retrofit."""
+        import yaml
+        from .memory import memory_legacy_frontmatter_retrofit as _retrofit
+
+        try:
+            payload = yaml.safe_load(payload_yaml)
+        except yaml.YAMLError:
+            return "Legacy retrofit failed: payload YAML is invalid"
+        if not isinstance(payload, dict):
+            return "Legacy retrofit failed: payload must be a mapping"
+        memory_payload = payload.get("memory_payload") if isinstance(payload.get("memory_payload"), dict) else payload
+        if not isinstance(memory_payload, dict):
+            return "Legacy retrofit failed: memory_payload must be a mapping"
+
+        root = personas_dir.strip()
+        if not root:
+            resolved = resolve_memory_whereami()
+            root = str(resolved.get("personas_dir") or "")
+        if not root:
+            return "No personas_dir configured."
+
+        result = _retrofit(
+            _get_memory_conn(),
+            Path(root),
+            persona=persona,
+            relative_path=relative_path,
+            memory_payload=memory_payload,
+            write=write,
+            overwrite_payload=overwrite_payload,
+            actor="mcp",
+        )
+        if not result.get("ok"):
+            return f"Legacy retrofit failed: {result.get('error', 'unknown error')}"
+        if not result.get("written"):
+            return (
+                "Legacy retrofit preview only. Re-run with write=true to persist. "
+                f"path={result['relative_path']} body_preserved={result['body_preserved']} "
+                f"review={result['review_status']}"
+            )
+        return (
+            f"Retrofitted legacy memory {result['relative_path']} ({persona}). "
+            f"body_preserved={result['body_preserved']} review={result['review_status']} "
+            f"indexed={result.get('indexed')}"
+        )
+
+    @server.tool()
     def memory_source_refs(
         persona: str = "",
         source_kind: str = "",
