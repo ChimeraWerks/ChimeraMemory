@@ -18,6 +18,7 @@ ENTITY_TYPES = {
     "tool",
     "organization",
     "place",
+    "date",
     "entity",
     "unknown",
 }
@@ -31,9 +32,15 @@ _PREFIX_TO_TYPE = {
     "project": "project",
     "tool": "tool",
     "org": "organization",
+    "orgs": "organization",
     "organization": "organization",
+    "organizations": "organization",
     "place": "place",
+    "places": "place",
     "topic": "topic",
+    "topics": "topic",
+    "date": "date",
+    "dates": "date",
 }
 
 
@@ -701,43 +708,67 @@ def apply_enhancement_entities(
         ("people", "person", "mentioned"),
         ("projects", "project", "mentioned"),
         ("tools", "tool", "mentioned"),
+        ("organizations", "organization", "mentioned"),
+        ("places", "place", "mentioned"),
+        ("dates", "date", "mentioned"),
         ("topics", "topic", "tag"),
     )
     linked_entities: list[dict] = []
     seen_keys = set()
     confidence = metadata.get("confidence")
     confidence_value = float(confidence) if isinstance(confidence, (int, float)) else 1.0
+    candidates: list[tuple[str, str, str, float, str]] = []
+
+    raw_entities = metadata.get("entities")
+    if isinstance(raw_entities, list):
+        for raw in raw_entities:
+            if not isinstance(raw, dict):
+                continue
+            entity_type = _clean_entity_type(raw.get("type") or raw.get("category"))
+            name = str(raw.get("name") or raw.get("canonical_name") or raw.get("entity") or "").strip()
+            raw_confidence = raw.get("confidence")
+            entity_confidence = (
+                float(raw_confidence)
+                if isinstance(raw_confidence, (int, float))
+                else confidence_value
+            )
+            role = "tag" if entity_type == "topic" else "mentioned"
+            candidates.append((name, entity_type, role, entity_confidence, "entities"))
 
     for field, entity_type, role in field_specs:
         raw_items = metadata.get(field)
         items = raw_items if isinstance(raw_items, list) else []
         for item in items:
             name = str(item or "").strip()
-            key = (_clean_entity_type(entity_type), normalize_entity_name(name), role)
-            if not name or key in seen_keys:
-                continue
-            seen_keys.add(key)
-            entity = upsert_memory_entity(
-                conn,
-                entity_type=entity_type,
-                canonical_name=name,
-                confidence=confidence_value,
-                source=source,
-                metadata={"persona": memory_row[1], "field": field},
-                commit=False,
-            )
-            link_memory_file_entity(
-                conn,
-                file_id=int(memory_row[0]),
-                entity_row_id=int(entity["id"]),
-                mention_role=role,
-                confidence=confidence_value,
-                source=source,
-                evidence=f"enhancement:{field}",
-                metadata={"relative_path": memory_row[2], "field": field},
-                commit=False,
-            )
-            linked_entities.append(entity)
+            candidates.append((name, entity_type, role, confidence_value, field))
+
+    for name, entity_type, role, entity_confidence, field in candidates:
+        clean_type = _clean_entity_type(entity_type)
+        key = (clean_type, normalize_entity_name(name), role)
+        if clean_type == "unknown" or not name or key in seen_keys or entity_confidence < 0.5:
+            continue
+        seen_keys.add(key)
+        entity = upsert_memory_entity(
+            conn,
+            entity_type=clean_type,
+            canonical_name=name,
+            confidence=entity_confidence,
+            source=source,
+            metadata={"persona": memory_row[1], "field": field},
+            commit=False,
+        )
+        link_memory_file_entity(
+            conn,
+            file_id=int(memory_row[0]),
+            entity_row_id=int(entity["id"]),
+            mention_role=role,
+            confidence=entity_confidence,
+            source=source,
+            evidence=f"enhancement:{field}",
+            metadata={"relative_path": memory_row[2], "field": field},
+            commit=False,
+        )
+        linked_entities.append(entity)
 
     edge_count = 0
     for source_entity, target_entity in combinations(linked_entities, 2):
@@ -747,7 +778,7 @@ def apply_enhancement_entities(
             target_entity_id=int(target_entity["id"]),
             relation_type="co_occurs_with",
             confidence=confidence_value,
-            classifier_version="memory_enhancement.v1",
+            classifier_version="memory_enhancement.v2",
             metadata={"file_id": file_id, "source": source},
             commit=False,
         )

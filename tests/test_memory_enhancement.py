@@ -53,7 +53,7 @@ def test_normalize_memory_enhancement_response_enforces_governance_defaults() ->
     )
 
     assert normalized["memory_type"] == "lesson"
-    assert normalized["topics"] == ["Review", "governance"]
+    assert normalized["topics"] == ["review", "governance"]
     assert normalized["people"] == ["Charles"]
     assert normalized["confidence"] == 1.0
     assert normalized["sensitivity_tier"] == "standard"
@@ -62,6 +62,56 @@ def test_normalize_memory_enhancement_response_enforces_governance_defaults() ->
     assert normalized["can_use_as_instruction"] is False
     assert normalized["can_use_as_evidence"] is True
     assert normalized["requires_user_confirmation"] is True
+
+
+def test_normalize_memory_enhancement_response_normalizes_typed_entities_and_actions() -> None:
+    normalized = normalize_memory_enhancement_response(
+        {
+            "memory_type": "procedural",
+            "summary": "Compare the live adapter against Hermes before writing.",
+            "entities": [
+                {"name": "agent/anthropic_adapter.py", "type": "tool", "confidence": 0.9},
+                {"name": "too vague", "type": "tool", "confidence": 0.2},
+                {"name": "Hermes agent", "type": "project", "confidence": 0.95},
+            ],
+            "topics": ["wire level behavior"],
+            "action_items": [
+                "grep the reference implementation before writing code",
+                "Diff live requests/responses against Hermes",
+                "Preserve UX parity",
+            ],
+            "confidence": 0.8,
+        }
+    )
+
+    assert normalized["entities"] == [
+        {
+            "name": "Anthropic adapter",
+            "type": "tool",
+            "confidence": 0.9,
+            "source_field": "entities",
+        },
+        {
+            "name": "Hermes",
+            "type": "project",
+            "confidence": 0.95,
+            "source_field": "entities",
+        },
+        {
+            "name": "wire-level",
+            "type": "topic",
+            "confidence": 1.0,
+            "source_field": "topics",
+        },
+    ]
+    assert normalized["tools"] == ["Anthropic adapter"]
+    assert normalized["projects"] == ["Hermes"]
+    assert normalized["topics"] == ["wire-level"]
+    assert normalized["action_items"] == [
+        "Grep reference implementation before writing",
+        "Compare live-call behavior against reference",
+        "Preserve reference UX behavior",
+    ]
 
 
 def test_normalize_memory_enhancement_response_forces_restricted_for_credential_metadata() -> None:

@@ -38,11 +38,85 @@ ALLOWED_MEMORY_TYPES = {
 }
 
 ALLOWED_SENSITIVITY_TIERS = {"standard", "restricted", "unknown"}
+ALLOWED_ENTITY_TYPES = {"person", "project", "topic", "tool", "organization", "place", "date"}
+ENTITY_CONFIDENCE_THRESHOLD = 0.5
 
 MAX_FIELD_CHARS = 240
 MAX_LIST_ITEMS = 25
 
 _WHITESPACE_RE = re.compile(r"\s+")
+_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+_PATH_EXTENSION_RE = re.compile(
+    r"\.(?:py|ts|tsx|js|jsx|mjs|cjs|json|ya?ml|md|txt|toml|ini|cfg|go|rs|java|cs|rb|php|sh|ps1|bat)$",
+    re.IGNORECASE,
+)
+_ENTITY_TYPE_ALIASES = {
+    "people": "person",
+    "persons": "person",
+    "human": "person",
+    "humans": "person",
+    "projects": "project",
+    "repos": "project",
+    "repositories": "project",
+    "tools": "tool",
+    "dates": "date",
+    "time": "date",
+    "times": "date",
+    "org": "organization",
+    "orgs": "organization",
+    "organizations": "organization",
+    "company": "organization",
+    "companies": "organization",
+    "topics": "topic",
+    "concept": "topic",
+    "concepts": "topic",
+    "places": "place",
+    "locations": "place",
+}
+_CANONICAL_ENTITY_ALIASES = {
+    "ar adversary review": "AR",
+    "adversary review": "AR",
+    "anthropic adapter": "Anthropic adapter",
+    "anthropic adapters": "Anthropic adapter",
+    "chimeramemory": "ChimeraMemory",
+    "claude code": "Claude Code",
+    "gemini cloudcode adapter": "Gemini Cloudcode adapter",
+    "gemini cloud code adapter": "Gemini Cloudcode adapter",
+    "gemini code assist": "Gemini Code Assist",
+    "google adapter": "Google adapter",
+    "google adapters": "Google adapter",
+    "hermes agent": "Hermes",
+    "hermes agent codebase": "Hermes",
+    "hermes codebase": "Hermes",
+    "oauth adapter": "OAuth",
+    "oauth adapters": "OAuth",
+    "oauth implementation": "OAuth",
+    "oauth integration": "OAuth",
+    "oauth day 60": "Day 60",
+    "ollama": "ollama",
+    "lmstudio": "lmstudio",
+    "koboldcpp": "koboldcpp",
+}
+_CANONICAL_TOPIC_ALIASES = {
+    "acceptance fixture": "acceptance-fixture",
+    "acceptance testing": "acceptance-fixture",
+    "adversary review": "ar-method",
+    "ar": "ar-method",
+    "debugging": "debugging",
+    "grep before implement": "grep-before-implement",
+    "grep before implementation": "grep-before-implement",
+    "live call diff": "live-call-diff",
+    "parity testing": "parity-testing",
+    "reference implementation": "reference-implementation",
+    "reference implementations": "reference-implementation",
+    "reverse engineering": "reverse-engineering",
+    "ux": "ux-parity",
+    "ux parity": "ux-parity",
+    "wire level": "wire-level",
+    "wire level behavior": "wire-level",
+    "wire level parity": "wire-level",
+    "wire protocol": "wire-level",
+}
 _SECRET_LITERAL_PREFIXES = tuple(
     "".join(parts)
     for parts in (
@@ -133,6 +207,177 @@ def _optional_confidence(value: Any) -> float | None:
     return max(0.0, min(1.0, parsed))
 
 
+def _label_key(value: Any) -> str:
+    text = _CONTROL_RE.sub("", str(value or "")).strip().lower()
+    text = text.replace("\\", "/")
+    if "/" in text and _PATH_EXTENSION_RE.search(text):
+        text = text.rsplit("/", 1)[-1]
+    text = _PATH_EXTENSION_RE.sub("", text)
+    text = re.sub(r"[`\"']", "", text)
+    text = re.sub(r"[_\-/]+", " ", text)
+    text = re.sub(r"[^a-z0-9.+# ]+", " ", text)
+    return _WHITESPACE_RE.sub(" ", text).strip()
+
+
+def _clean_entity_type(value: Any) -> str:
+    key = _label_key(value)
+    entity_type = _ENTITY_TYPE_ALIASES.get(key, key)
+    return entity_type if entity_type in ALLOWED_ENTITY_TYPES else ""
+
+
+def _display_from_key(key: str) -> str:
+    special_tokens = {
+        "ai": "AI",
+        "api": "API",
+        "ar": "AR",
+        "cm": "CM",
+        "db": "DB",
+        "gpt": "GPT",
+        "json": "JSON",
+        "llm": "LLM",
+        "oauth": "OAuth",
+        "pa": "PA",
+        "ux": "UX",
+    }
+    words = []
+    for word in key.split():
+        words.append(special_tokens.get(word, word[:1].upper() + word[1:]))
+    return " ".join(words)
+
+
+def _canonical_entity_name(value: Any, *, entity_type: str = "") -> str:
+    if entity_type == "date":
+        return _clean_text(value)
+    key = _label_key(value)
+    if not key:
+        return ""
+    if entity_type == "topic":
+        return _CANONICAL_TOPIC_ALIASES.get(key, key.replace(" ", "-"))
+    if key in _CANONICAL_ENTITY_ALIASES:
+        return _CANONICAL_ENTITY_ALIASES[key]
+    return _display_from_key(key)
+
+
+def _normalize_typed_entities(payload: Mapping[str, Any], *, default_confidence: float) -> list[dict[str, Any]]:
+    candidates: list[tuple[str, Any, Any, str]] = []
+    raw_entities = payload.get("entities")
+    if isinstance(raw_entities, Sequence) and not isinstance(raw_entities, (str, bytes, bytearray)):
+        for raw in raw_entities:
+            if isinstance(raw, Mapping):
+                raw_name = raw.get("name") or raw.get("canonical_name") or raw.get("entity") or raw.get("value")
+                raw_type = raw.get("type") or raw.get("category") or raw.get("entity_type")
+                candidates.append((_clean_entity_type(raw_type), raw_name, raw.get("confidence"), "entities"))
+            else:
+                candidates.append(("topic", raw, default_confidence, "entities"))
+
+    legacy_specs = (
+        ("topics", "topic"),
+        ("people", "person"),
+        ("projects", "project"),
+        ("tools", "tool"),
+        ("dates", "date"),
+        ("organizations", "organization"),
+        ("places", "place"),
+    )
+    for field, entity_type in legacy_specs:
+        for item in _clean_list(payload.get(field)):
+            candidates.append((entity_type, item, default_confidence, field))
+
+    normalized: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_type, raw_name, raw_confidence, source_field in candidates:
+        entity_type = raw_type if raw_type in ALLOWED_ENTITY_TYPES else ""
+        confidence = _optional_confidence(raw_confidence)
+        if confidence is None:
+            confidence = default_confidence
+        if not entity_type or confidence < ENTITY_CONFIDENCE_THRESHOLD:
+            continue
+        name = _canonical_entity_name(raw_name, entity_type=entity_type)
+        key = (entity_type, _label_key(name))
+        if not name or key in seen:
+            continue
+        normalized.append(
+            {
+                "name": name[:MAX_FIELD_CHARS],
+                "type": entity_type,
+                "confidence": confidence,
+                "source_field": source_field,
+            }
+        )
+        seen.add(key)
+        if len(normalized) >= MAX_LIST_ITEMS:
+            break
+    return normalized
+
+
+def _project_entities(entities: Sequence[Mapping[str, Any]]) -> dict[str, list[str]]:
+    projected = {
+        "topics": [],
+        "people": [],
+        "projects": [],
+        "tools": [],
+        "dates": [],
+        "organizations": [],
+        "places": [],
+    }
+    type_to_field = {
+        "topic": "topics",
+        "person": "people",
+        "project": "projects",
+        "tool": "tools",
+        "date": "dates",
+        "organization": "organizations",
+        "place": "places",
+    }
+    seen: dict[str, set[str]] = {field: set() for field in projected}
+    for entity in entities:
+        field = type_to_field.get(str(entity.get("type") or ""))
+        name = _clean_text(entity.get("name"))
+        if not field or not name:
+            continue
+        key = _label_key(name)
+        if key in seen[field]:
+            continue
+        projected[field].append(name)
+        seen[field].add(key)
+    return projected
+
+
+def _canonical_action_item(value: Any) -> str:
+    text = _clean_text(value, max_chars=180).rstrip(" .;:")
+    key = _label_key(text)
+    if not key:
+        return ""
+    if "grep" in key and ("reference" in key or "install" in key):
+        return "Grep reference implementation before writing"
+    if (
+        {"diff", "compare", "validate", "verify"} & set(key.split())
+        and ("live" in key or "request" in key or "response" in key)
+        and ("reference" in key or "hermes" in key or "constant" in key)
+    ):
+        return "Compare live-call behavior against reference"
+    if "ux" in key and ("preserve" in key or "parity" in key or "behavior" in key):
+        return "Preserve reference UX behavior"
+    if "wire" in key and "axis" in key:
+        return "Check each wire-level axis independently"
+    return text[:1].upper() + text[1:]
+
+
+def _clean_action_items(value: Any) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in _clean_list(value):
+        action = _canonical_action_item(item)
+        key = _label_key(action)
+        if not action or key in seen:
+            continue
+        cleaned.append(action)
+        seen.add(key)
+        if len(cleaned) >= MAX_LIST_ITEMS:
+            break
+    return cleaned
+
+
 def wrap_untrusted_memory_content(content: str) -> str:
     """Wrap captured content as data the sidecar must not obey."""
     safe_content = str(content or "")
@@ -174,6 +419,7 @@ def build_memory_enhancement_request(
         "expected_fields": [
             "memory_type",
             "summary",
+            "entities",
             "topics",
             "people",
             "projects",
@@ -201,17 +447,23 @@ def normalize_memory_enhancement_response(
     )
     if _contains_restricted_sensitivity_signal(payload, sensitivity_context):
         sensitivity_tier = "restricted"
+    confidence = _optional_confidence(payload.get("confidence"))
+    entities = _normalize_typed_entities(payload, default_confidence=1.0)
+    projected = _project_entities(entities)
 
     return {
         "memory_type": memory_type,
         "summary": _clean_text(payload.get("summary") or payload.get("about")),
-        "topics": _clean_list(payload.get("topics")),
-        "people": _clean_list(payload.get("people")),
-        "projects": _clean_list(payload.get("projects")),
-        "tools": _clean_list(payload.get("tools")),
-        "action_items": _clean_list(payload.get("action_items")),
-        "dates": _clean_list(payload.get("dates")),
-        "confidence": _optional_confidence(payload.get("confidence")),
+        "entities": entities,
+        "topics": projected["topics"],
+        "people": projected["people"],
+        "projects": projected["projects"],
+        "tools": projected["tools"],
+        "organizations": projected["organizations"],
+        "places": projected["places"],
+        "action_items": _clean_action_items(payload.get("action_items")),
+        "dates": projected["dates"],
+        "confidence": confidence,
         "sensitivity_tier": sensitivity_tier,
         "provenance_status": "generated",
         "review_status": "pending",

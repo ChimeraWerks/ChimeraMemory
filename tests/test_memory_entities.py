@@ -2,6 +2,7 @@ import sqlite3
 from pathlib import Path
 
 from chimera_memory.memory import (
+    apply_enhancement_entities,
     index_file,
     init_memory_tables,
     memory_audit_query,
@@ -138,3 +139,44 @@ def test_typed_entity_edge_upsert_accumulates_support() -> None:
     assert edges[0]["source"]["canonical_name"] == "PA"
     assert edges[0]["target"]["canonical_name"] == "Codex"
     assert edges[0]["support_count"] == 2
+
+
+def test_apply_enhancement_entities_links_typed_contract_entities(tmp_path: Path) -> None:
+    conn = sqlite3.connect(":memory:")
+    init_memory_tables(conn)
+
+    memory_file = tmp_path / "adapter.md"
+    _write_memory(
+        memory_file,
+        ["type: procedural", "importance: 7", "tags: []"],
+        "Sarah compared the Anthropic adapter against live-call behavior on May 17.",
+    )
+    assert index_file(conn, "asa", "adapter.md", memory_file)
+    file_id = conn.execute("SELECT id FROM memory_files WHERE relative_path = ?", ("adapter.md",)).fetchone()[0]
+
+    result = apply_enhancement_entities(
+        conn,
+        file_id=file_id,
+        metadata={
+            "entities": [
+                {"name": "Anthropic adapter", "type": "tool", "confidence": 0.9},
+                {"name": "Sarah", "type": "person", "confidence": 0.8},
+                {"name": "May 17 2026", "type": "date", "confidence": 0.7},
+                {"name": "discard me", "type": "project", "confidence": 0.2},
+            ],
+            "topics": ["wire-level"],
+            "confidence": 0.6,
+        },
+    )
+
+    assert result == {"link_count": 4, "edge_count": 6}
+    links = memory_file_entity_links(conn, file_path="adapter.md")
+    by_name = {link["canonical_name"]: link for link in links}
+
+    assert set(by_name) == {"Anthropic adapter", "Sarah", "May 17 2026", "wire-level"}
+    assert by_name["Anthropic adapter"]["entity_type"] == "tool"
+    assert by_name["Sarah"]["entity_type"] == "person"
+    assert by_name["May 17 2026"]["entity_type"] == "date"
+    assert by_name["wire-level"]["entity_type"] == "topic"
+    assert by_name["wire-level"]["mention_role"] == "tag"
+    assert by_name["Anthropic adapter"]["confidence"] == 0.9

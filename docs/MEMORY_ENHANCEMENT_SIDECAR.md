@@ -256,6 +256,10 @@ not print raw memory body text or credential references.
 
 ### Response
 
+The primary extraction contract is a typed `entities` array derived from the
+OpenBrain worker pattern, adapted to CM's local SQLite graph. Legacy list fields
+remain as projections so older frontmatter and review tooling keeps working.
+
 ```json
 {
   "schema_version": "chimera-memory.sidecar.enhance.v1",
@@ -263,12 +267,21 @@ not print raw memory body text or credential references.
   "status": "ok|partial|rejected|error",
   "metadata": {
     "type": "episodic|semantic|procedural|entity|reflection|social|unknown",
+    "entities": [
+      {
+        "name": "canonical stable name",
+        "type": "person|project|topic|tool|organization|place|date",
+        "confidence": 0.0
+      }
+    ],
     "topics": [],
     "people": [],
     "projects": [],
     "tools": [],
+    "organizations": [],
+    "places": [],
     "action_items": [],
-    "dates_mentioned": [],
+    "dates": [],
     "summary": "short neutral summary",
     "confidence": 0.0,
     "sensitivity_tier": "standard|restricted|unknown",
@@ -292,6 +305,15 @@ not print raw memory body text or credential references.
   }
 }
 ```
+
+Validation rules:
+
+- Drop typed entities below `confidence < 0.5`.
+- Sanitize entity names, strip control characters, and cap field length.
+- Canonicalize common aliases before projecting to legacy lists.
+- Treat action items as stable imperative directives, then canonicalize known
+  variants before grading.
+- Persist generated metadata as evidence only until reviewed.
 
 ## Prompt-Injection Wrapper
 

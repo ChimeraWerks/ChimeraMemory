@@ -123,12 +123,12 @@ The lift items above are sequenced into six phases. Each phase ships independent
 Separate worker from role-play persona sidecar. Shared infrastructure (OAuth token management, subprocess spawn discipline, prompt-injection-safe content wrapping, rate-limit observability) but distinct processes.
 
 - **Input:** raw memory content + persona context.
-- **Output:** structured metadata JSON (type, topics, people, action_items, dates, optional confidence + sensitivity hints).
+- **Output:** typed metadata JSON centered on `entities[]` objects (`name`, closed-set `type`, `confidence`), with compatibility projections for topics, people, projects, tools, organizations, places, dates, action items, confidence, and sensitivity hints.
 - **Model choice (user-toggleable, priority order):**
-  1. gpt-4o-mini via user's OpenAI subscription
-  2. Haiku 4.5 via user's Anthropic subscription
-  3. Local Ollama (gemma2:2b for offline) as fallback
-  4. Local fastembed retains as default for embeddings
+  1. OpenAI, Anthropic, Gemini, or OpenRouter via configured credential refs
+  2. Local OpenAI-compatible, Ollama, or LM Studio as fallback candidates
+  3. Local fastembed retains as default for embeddings
+- **Extraction architecture:** OB1-style closed-set entities, confidence filtering, name sanitization, deterministic canonicalization, and prompt-injection-safe content wrapping. CM adapts the pattern to Markdown/YAML memory files plus the local SQLite entity graph instead of copying OB1's storage model.
 - **Subprocess discipline:** port-close-wait pattern, supervisor cadence hook (lifted from PA Day 56-57 work).
 - **Content wrapper:** OB1's `wrapThoughtContent` equivalent. Captured content always wrapped as untrusted before LLM call.
 - **OAuth plumbing:** scoped tokens passed to sidecar, not raw refresh-tokens. Same shape as PA's runtime-profile credential handling.
