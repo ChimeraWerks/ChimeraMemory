@@ -527,6 +527,67 @@ def test_provider_client_dry_run_path_needs_no_token() -> None:
     assert metadata["sensitivity_tier"] == "standard"
 
 
+def test_provider_client_dry_run_raw_json_trace_analysis_uses_trace_contract() -> None:
+    plan = resolve_enhancement_provider_plan({"CHIMERA_MEMORY_ENHANCEMENT_PROVIDER_ORDER": "dry_run"})
+    invocation = build_enhancement_invocation(
+        {
+            "schema_version": "chimera-memory.retrieval-trace-analysis.v1",
+            "task": "analyze_memory_retrieval_trace",
+            "trace": {
+                "tool_name": "memory_recall",
+                "query_text": "What ProjectChimera work shipped today?",
+                "requested_limit": 10,
+                "returned_count": 10,
+                "items": [
+                    {
+                        "rank": 1,
+                        "relative_path": "memory/episodes/day62-projectchimera-phase5-merged.md",
+                    }
+                ],
+            },
+        },
+        plan,
+    )
+    invocation["raw_json"] = True
+
+    analysis = ProviderModelMemoryEnhancementClient().invoke(invocation)
+
+    assert analysis["category"] == "ok"
+    assert analysis["severity"] == "info"
+    assert analysis["suggested_tool_route"] == "memory_recall"
+    assert "memory_type" not in analysis
+
+
+def test_provider_client_dry_run_raw_json_trace_analysis_flags_noise_paths() -> None:
+    plan = resolve_enhancement_provider_plan({"CHIMERA_MEMORY_ENHANCEMENT_PROVIDER_ORDER": "dry_run"})
+    invocation = build_enhancement_invocation(
+        {
+            "schema_version": "chimera-memory.retrieval-trace-analysis.v1",
+            "task": "analyze_memory_retrieval_trace",
+            "trace": {
+                "tool_name": "memory_search",
+                "query_text": "synthesis dossier pollutes search results",
+                "requested_limit": 10,
+                "returned_count": 2,
+                "items": [
+                    {
+                        "rank": 1,
+                        "relative_path": "diagnostics/generated-summary.md",
+                    }
+                ],
+            },
+        },
+        plan,
+    )
+    invocation["raw_json"] = True
+
+    analysis = ProviderModelMemoryEnhancementClient().invoke(invocation)
+
+    assert analysis["category"] == "diagnostics_noise_pollution"
+    assert analysis["severity"] == "high"
+    assert analysis["confidence"] == 0.9
+
+
 def test_provider_client_failures_are_bounded_and_do_not_include_tokens_or_content() -> None:
     ProviderModelMemoryEnhancementClient.reset_call_count()
     fake_token = "TEST_ONLY_OPENAI_TOKEN"

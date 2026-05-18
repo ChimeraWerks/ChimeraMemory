@@ -57,6 +57,8 @@ class ProviderModelMemoryEnhancementClient:
         provider = _provider(invocation)
         provider_id = provider["provider_id"]
         if provider_id == "dry_run":
+            if bool(invocation.get("raw_json")):
+                return _dry_run_raw_json_response(invocation)
             return build_dry_run_sidecar_response(invocation)["metadata"]
         if provider_id == "openai":
             return self._invoke_openai(invocation, provider)
@@ -399,6 +401,75 @@ def _metadata_from_model_text(value: object, *, raw_json: bool = False) -> Mappi
     if raw_json:
         return payload
     return normalize_memory_enhancement_response(payload)
+
+
+def _dry_run_raw_json_response(invocation: Mapping[str, Any]) -> Mapping[str, Any]:
+    request = invocation.get("request") if isinstance(invocation.get("request"), Mapping) else {}
+    if request.get("task") != "analyze_memory_retrieval_trace":
+        return {}
+
+    trace = request.get("trace") if isinstance(request.get("trace"), Mapping) else {}
+    items = trace.get("items") if isinstance(trace.get("items"), list) else []
+    noise_items = [
+        item
+        for item in items
+        if isinstance(item, Mapping) and _is_diagnostic_noise_path(item.get("relative_path"))
+    ]
+    returned_count = _int(trace.get("returned_count"), 0)
+    requested_limit = _int(trace.get("requested_limit"), 0)
+
+    if noise_items:
+        return {
+            "category": "diagnostics_noise_pollution",
+            "secondary_categories": [],
+            "severity": "high",
+            "confidence": 0.9,
+            "recommendation": "Exclude generated diagnostics and research-output paths from default memory retrieval.",
+            "evidence": [
+                f"Dry-run saw diagnostic path in returned items: {noise_items[0].get('relative_path')}"
+            ],
+            "query_expansions": [],
+            "suggested_tool_route": str(trace.get("tool_name") or "unknown"),
+        }
+    if returned_count <= 0:
+        return {
+            "category": "expected_memory_not_indexed",
+            "secondary_categories": ["query_too_vague"],
+            "severity": "medium",
+            "confidence": 0.45,
+            "recommendation": "Verify the expected memory file is indexed before changing ranking or query expansion.",
+            "evidence": ["Dry-run saw an empty retrieval trace."],
+            "query_expansions": [],
+            "suggested_tool_route": str(trace.get("tool_name") or "unknown"),
+        }
+
+    evidence = [f"Dry-run found {returned_count} returned item(s)."]
+    if requested_limit and returned_count >= requested_limit:
+        evidence.append("The trace filled the requested limit.")
+    return {
+        "category": "ok",
+        "secondary_categories": [],
+        "severity": "info",
+        "confidence": 0.2,
+        "recommendation": "No deterministic dry-run retrieval defect detected; use a real provider for semantic trace diagnosis.",
+        "evidence": evidence,
+        "query_expansions": [],
+        "suggested_tool_route": str(trace.get("tool_name") or "unknown"),
+    }
+
+
+def _is_diagnostic_noise_path(value: object) -> bool:
+    path = str(value or "").replace("\\", "/").strip().lower()
+    return (
+        path.startswith("diagnostics/")
+        or path.startswith("cache/")
+        or path.startswith("research/proposals/")
+        or path.startswith("research/generated/")
+        or "/diagnostics/" in path
+        or "/cache/" in path
+        or "/research/proposals/" in path
+        or "/research/generated/" in path
+    )
 
 
 def _extract_json_text(text: str) -> str:
