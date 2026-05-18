@@ -588,6 +588,32 @@ def test_provider_client_dry_run_raw_json_trace_analysis_flags_noise_paths() -> 
     assert analysis["confidence"] == 0.9
 
 
+def test_provider_client_dry_run_raw_json_trace_analysis_flags_empty_trace() -> None:
+    plan = resolve_enhancement_provider_plan({"CHIMERA_MEMORY_ENHANCEMENT_PROVIDER_ORDER": "dry_run"})
+    invocation = build_enhancement_invocation(
+        {
+            "schema_version": "chimera-memory.retrieval-trace-analysis.v1",
+            "task": "analyze_memory_retrieval_trace",
+            "trace": {
+                "tool_name": "memory_recall",
+                "query_text": "missing operational rule",
+                "requested_limit": 10,
+                "returned_count": 0,
+                "items": [],
+            },
+        },
+        plan,
+    )
+    invocation["raw_json"] = True
+
+    analysis = ProviderModelMemoryEnhancementClient().invoke(invocation)
+
+    assert analysis["category"] == "expected_memory_not_indexed"
+    assert analysis["secondary_categories"] == ["query_too_vague"]
+    assert analysis["severity"] == "medium"
+    assert analysis["confidence"] == 0.45
+
+
 def test_provider_client_failures_are_bounded_and_do_not_include_tokens_or_content() -> None:
     ProviderModelMemoryEnhancementClient.reset_call_count()
     fake_token = "TEST_ONLY_OPENAI_TOKEN"
