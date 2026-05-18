@@ -79,6 +79,22 @@ Rules:
 - Exclude restricted memories by default.
 - Keep this local and deterministic unless a future classifier adapter is explicitly added.
 
+### `memory_retrieval_trace_analysis.py`
+
+Owns post-hoc retrieval diagnostics:
+
+- recall trace summarization
+- bounded diagnostic categories
+- strict JSON invocation envelope for an injected analysis client
+- audit logging for analysis runs
+
+Rules:
+
+- Never send raw memory bodies to the analysis client.
+- Do not mutate recall ranking or inject memories into prompts.
+- Treat analysis output as recommendations only.
+- Deterministic CM fixes should be implemented separately after validation.
+
 ### `memory_review.py`
 
 Owns human review workflows:
@@ -552,6 +568,7 @@ Avoid:
 - Governance: `tests/test_memory_governance.py`
 - Observability: `tests/test_memory_observability.py`
 - Live retrieval: `tests/test_memory_live_retrieval.py`
+- Retrieval trace analysis: `tests/test_memory_retrieval_trace_analysis.py`
 - Review: `tests/test_memory_review.py`
 - Auto-capture: `tests/test_memory_auto_capture.py`
 - Entities: `tests/test_memory_entities.py`

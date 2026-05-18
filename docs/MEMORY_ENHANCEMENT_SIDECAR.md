@@ -256,6 +256,46 @@ enforces the read-side filter in CM.
 `thought` or memory-file dossier output is intentionally deferred until every
 write path carries the synthesis flag and every read path opts out by default.
 
+## Retrieval Trace Analysis
+
+The enrichment sidecar can help retrieval without joining the hot path.
+`memory_retrieval_trace_analyze` is a diagnostic-only tool that analyzes stored
+recall traces after retrieval has already happened.
+
+The tool sends the model a trace summary only:
+
+- query text
+- tool name
+- returned counts
+- response policy
+- returned paths, types, ranks, scores, and bounded frontmatter metadata
+
+It intentionally does not send raw memory bodies. It does not answer the user's
+query, change ranking, inject memory, or write retrieval changes automatically.
+
+Allowed diagnostic categories:
+
+- `ok`
+- `query_too_vague`
+- `wrong_tool_route`
+- `alias_entity_fragmentation`
+- `structured_fields_missing`
+- `diagnostics_noise_pollution`
+- `synthesis_row_leaked`
+- `expected_memory_not_indexed`
+- `unknown`
+
+The intended workflow is:
+
+1. Run normal deterministic retrieval.
+2. Inspect weak, empty, or noisy recall traces.
+3. Let the sidecar classify why retrieval underperformed.
+4. Implement deterministic fixes when the diagnosis is valid.
+
+Query expansion and reranking remain shadow-mode follow-ups. They should be
+measured against the retrieval regression suite before any default behavior
+changes.
+
 Failure storage is intentionally narrow. Raw provider stderr, exception text,
 request content, and credential values do not get written to the queue. The job
 stores a category such as `auth_error` or `parse_error` plus provider/model ids.

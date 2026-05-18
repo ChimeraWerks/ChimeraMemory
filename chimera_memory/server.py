@@ -778,6 +778,50 @@ def create_server():
         return "\n".join(lines)
 
     @server.tool()
+    def memory_retrieval_trace_analyze(
+        trace_id: str = "",
+        persona: str | None = None,
+        tool_name: str | None = None,
+        limit: int = 10,
+    ) -> str:
+        """Analyze recall traces for retrieval-quality failure modes without changing ranking."""
+        _ensure_memory_indexed()
+        from .memory_enhancement_provider_sidecar import ResolvingMemoryEnhancementProviderClient
+        from .memory_retrieval_trace_analysis import memory_retrieval_trace_analyze as _analyze
+
+        selected_persona = (persona or "").strip() or None
+        result = _analyze(
+            _get_memory_conn(),
+            client=ResolvingMemoryEnhancementProviderClient(),
+            trace_id=(trace_id or "").strip(),
+            persona=selected_persona,
+            tool_name=(tool_name or "").strip() or None,
+            limit=limit,
+            actor="mcp",
+        )
+        if not result.get("analyses") and not result.get("failures"):
+            return "No recall traces found to analyze."
+        lines = [
+            f"Retrieval trace analysis: {result['analysis_count']}/{result['trace_count']} analyzed.",
+            f"Category counts: {result.get('category_counts') or {}}",
+        ]
+        for item in result.get("analyses", [])[: max(0, min(int(limit), 20))]:
+            lines.append(
+                f"- {item.get('category')} severity={item.get('severity')} "
+                f"conf={float(item.get('confidence') or 0.0):.2f} "
+                f"trace={item.get('trace_id')}"
+            )
+            lines.append(f"  query: {item.get('query_text', '')}")
+            if item.get("recommendation"):
+                lines.append(f"  fix: {item['recommendation']}")
+            expansions = item.get("query_expansions") or []
+            if expansions:
+                lines.append(f"  expansions: {', '.join(str(v) for v in expansions[:3])}")
+        for failure in result.get("failures", [])[:5]:
+            lines.append(f"- failed trace={failure.get('trace_id')}: {failure.get('reason')}")
+        return "\n".join(lines)
+
+    @server.tool()
     def memory_audit_query(
         event_type: str | None = None,
         persona: str | None = None,
